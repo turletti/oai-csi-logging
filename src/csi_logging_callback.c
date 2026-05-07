@@ -1,4 +1,5 @@
 /* src/csi_logging_callback.c */
+#include <stddef.h>
 #include "csi_rb_logging_external.h"
 #include <pthread.h>
 #include <stdio.h>
