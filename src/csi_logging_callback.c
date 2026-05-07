@@ -3,11 +3,37 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <string.h>
+
+extern int csi_rb_logging_enabled;
+extern void (*csi_rb_logging_callback)(const void *, const void *, const void *, const void *);
 
 static csi_ring_buffer_t csi_buffer;
 static pthread_t logging_thread;
 static int logging_active = 0;
 static const char *csi_output_file = "/tmp/csi_per_rb.csv";
+
+__attribute__((constructor))
+static void csi_logging_auto_init(void) {
+  const char *enabled = getenv("CSI_LOGGING_ENABLED");
+  const char *output_dir = getenv("CSI_OUTPUT_DIR");
+  
+  if (!enabled || atoi(enabled) != 1)
+    return;
+  
+  char filepath[512];
+  if (output_dir) {
+    snprintf(filepath, sizeof(filepath), "%s/csi_per_rb.csv", output_dir);
+  } else {
+    snprintf(filepath, sizeof(filepath), "/tmp/csi_per_rb.csv");
+  }
+  
+  csi_logging_init(filepath);
+  
+  extern void csi_rb_logging_callback_impl(const void *, const void *, const void *, const void *);
+  csi_rb_logging_callback = csi_rb_logging_callback_impl;
+  csi_rb_logging_enabled = 1;
+}
 
 static void *csi_logging_thread_func(void *arg) {
   FILE *fp = fopen(csi_output_file, "w");

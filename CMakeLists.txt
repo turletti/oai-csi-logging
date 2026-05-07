@@ -23,6 +23,8 @@ install(TARGETS csi_logging
   ARCHIVE DESTINATION lib
 )
 
-install(FILES include/csi_rb_logging_external.h include/csi_oai_wrapper.h
+install(FILES include/csi_rb_logging_external.h 
+              include/csi_oai_wrapper.h
+              include/csi_logging_init.h
   DESTINATION include
 )
