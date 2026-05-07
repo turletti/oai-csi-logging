@@ -65,18 +65,19 @@ static void *csi_logging_thread_func(void *arg) {
 }
 
 int csi_logging_init(const char *output_file) {
+  static int _initialized = 0;
+  if (_initialized) return 0;
+  _initialized = 1;
+
   if (output_file)
     csi_output_file = output_file;
-
   if (csi_ring_buffer_init(&csi_buffer, 1000) < 0)
     return -1;
-
   logging_active = 1;
   if (pthread_create(&logging_thread, NULL, csi_logging_thread_func, NULL) < 0) {
     logging_active = 0;
     return -1;
   }
-
   return 0;
 }
 
