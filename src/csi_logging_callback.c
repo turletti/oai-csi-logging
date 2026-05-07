@@ -1,3 +1,4 @@
+/* src/csi_logging_callback.c */
 #include "csi_rb_logging_external.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -5,8 +6,8 @@
 #include <unistd.h>
 #include <string.h>
 
-extern int csi_rb_logging_enabled;
-extern void (*csi_rb_logging_callback)(const void *, const void *, const void *, const void *);
+int csi_rb_logging_enabled = 0;
+void (*csi_rb_logging_callback)(const void *, const void *, const void *, const void *) = NULL;
 
 static csi_ring_buffer_t csi_buffer;
 static pthread_t logging_thread;
@@ -41,10 +42,10 @@ static void *csi_logging_thread_func(void *arg) {
     fprintf(stderr, "Failed to open %s\n", csi_output_file);
     return NULL;
   }
-  
+
   fprintf(fp, "frame,slot,rb,subcarrier,real,imag\n");
   fflush(fp);
-  
+
   csi_rb_measurement_t meas;
   while (logging_active) {
     if (csi_ring_buffer_pop(&csi_buffer, &meas) == 0) {
@@ -58,7 +59,7 @@ static void *csi_logging_thread_func(void *arg) {
       usleep(1000);
     }
   }
-  
+
   fclose(fp);
   return NULL;
 }
@@ -66,16 +67,16 @@ static void *csi_logging_thread_func(void *arg) {
 int csi_logging_init(const char *output_file) {
   if (output_file)
     csi_output_file = output_file;
-  
+
   if (csi_ring_buffer_init(&csi_buffer, 1000) < 0)
     return -1;
-  
+
   logging_active = 1;
   if (pthread_create(&logging_thread, NULL, csi_logging_thread_func, NULL) < 0) {
     logging_active = 0;
     return -1;
   }
-  
+
   return 0;
 }
 
@@ -83,7 +84,7 @@ void csi_logging_cleanup(void) {
   logging_active = 0;
   if (logging_thread)
     pthread_join(logging_thread, NULL);
-  
+
   csi_ring_buffer_free(&csi_buffer);
 }
 
@@ -91,13 +92,13 @@ int csi_logging_push_measurement(uint32_t frame, uint32_t slot, uint32_t rb,
                                   const void *h_data, uint32_t num_subcarriers) {
   if (!h_data || num_subcarriers != 12)
     return -1;
-  
+
   csi_rb_measurement_t meas;
   meas.frame = frame;
   meas.slot = slot;
   meas.rb = rb;
   meas.num_subcarriers = num_subcarriers;
   meas.h_per_rb = (c16_t *)h_data;
-  
+
   return csi_ring_buffer_push(&csi_buffer, &meas);
 }

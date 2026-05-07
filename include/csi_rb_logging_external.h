@@ -1,3 +1,4 @@
+/* include/csi_rb_logging_external.h */
 #ifndef CSI_RB_LOGGING_EXTERNAL_H
 #define CSI_RB_LOGGING_EXTERNAL_H
 
@@ -28,5 +29,8 @@ int csi_ring_buffer_init(csi_ring_buffer_t *rb, uint32_t capacity);
 int csi_ring_buffer_push(csi_ring_buffer_t *rb, const csi_rb_measurement_t *meas);
 int csi_ring_buffer_pop(csi_ring_buffer_t *rb, csi_rb_measurement_t *meas);
 void csi_ring_buffer_free(csi_ring_buffer_t *rb);
+
+extern int csi_rb_logging_enabled;
+extern void (*csi_rb_logging_callback)(const void *, const void *, const void *, const void *);
 
 #endif
