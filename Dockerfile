@@ -19,7 +19,7 @@ RUN mkdir -p build && cd build && \
 FROM ubuntu:24.04 AS csi-logging
 
 RUN apt-get update && apt-get install -y \
-    libpthread-stubs0 \
+    #libpthread-stubs0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/lib/libcsi_logging.so* /usr/local/lib/
