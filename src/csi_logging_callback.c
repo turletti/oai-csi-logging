@@ -13,7 +13,7 @@ void (*csi_rb_logging_callback)(const void *, const void *, const void *, const 
 static csi_ring_buffer_t csi_buffer;
 static pthread_t logging_thread;
 static int logging_active = 0;
-static const char *csi_output_file = "/tmp/csi_per_rb.csv";
+static char *csi_output_file = "/tmp/csi_per_rb.csv";
 
 __attribute__((constructor))
 static void csi_logging_auto_init(void) {
@@ -92,7 +92,7 @@ void csi_logging_cleanup(void) {
 
 int csi_logging_push_measurement(uint32_t frame, uint32_t slot, uint32_t rb,
                                   const void *h_data, uint32_t num_subcarriers) {
-  if (!h_data || num_subcarriers != 12)
+  if (!h_data || num_subcarriers > 12)
     return -1;
 
   csi_rb_measurement_t meas;
@@ -100,7 +100,7 @@ int csi_logging_push_measurement(uint32_t frame, uint32_t slot, uint32_t rb,
   meas.slot = slot;
   meas.rb = rb;
   meas.num_subcarriers = num_subcarriers;
-  meas.h_per_rb = (c16_t *)h_data;
+  memcpy(meas.h_per_rb, h_data, num_subcarriers * sizeof(c16_t));
 
   return csi_ring_buffer_push(&csi_buffer, &meas);
 }

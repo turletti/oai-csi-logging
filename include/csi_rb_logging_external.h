@@ -15,7 +15,7 @@ typedef struct {
   uint32_t slot;
   uint32_t rb;
   uint16_t num_subcarriers;
-  c16_t *h_per_rb;
+  c16_t h_per_rb[12];
 } csi_rb_measurement_t;
 
 typedef struct {

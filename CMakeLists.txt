@@ -10,7 +10,6 @@ add_library(csi_logging SHARED
   src/csi_ring_buffer.c
   src/csi_logging_callback.c
   src/csi_oai_wrapper.c
-  src/csi_rb_logging.c
 )
 
 target_include_directories(csi_logging PUBLIC
@@ -27,6 +26,5 @@ install(TARGETS csi_logging
 install(FILES include/csi_rb_logging_external.h 
               include/csi_oai_wrapper.h
               include/csi_logging_init.h
-              include/csi_rb_logging.h
   DESTINATION include
 )
