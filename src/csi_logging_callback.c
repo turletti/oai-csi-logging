@@ -13,7 +13,7 @@ void (*csi_rb_logging_callback)(const void *, const void *, const void *, const 
 static csi_ring_buffer_t csi_buffer;
 static pthread_t logging_thread;
 static int logging_active = 0;
-static char *csi_output_file = "/tmp/csi_per_rb.csv";
+static char csi_output_file_buf[512] = "/tmp/csi_per_rb.csv";
 
 __attribute__((constructor))
 static void csi_logging_auto_init(void) {
@@ -38,9 +38,9 @@ static void csi_logging_auto_init(void) {
 }
 
 static void *csi_logging_thread_func(void *arg) {
-  FILE *fp = fopen(csi_output_file, "w");
+  FILE *fp = fopen(csi_output_file_buf, "w");
   if (!fp) {
-    fprintf(stderr, "Failed to open %s\n", csi_output_file);
+    fprintf(stderr, "Failed to open %s\n", csi_output_file_buf);
     return NULL;
   }
 
@@ -70,8 +70,9 @@ int csi_logging_init(const char *output_file) {
   if (_initialized) return 0;
   _initialized = 1;
 
-  if (output_file)
-    csi_output_file = output_file;
+  if (output_file) {
+    snprintf(csi_output_file_buf, sizeof(csi_output_file_buf), "%s", output_file);
+  }
   if (csi_ring_buffer_init(&csi_buffer, 1000) < 0)
     return -1;
   logging_active = 1;
