@@ -25,25 +25,18 @@ void csi_rb_logging_callback_impl(
     const void *csi_rs_estimated_channel_freq,
     const void *csirs_config_pdu)
 {
-  if (!proc || !csirs_config_pdu || !csi_rs_estimated_channel_freq)
+  if (!proc || !csirs_config_pdu)
     return;
   
   const UE_nr_rxtx_proc_t_stub *proc_stub = (const UE_nr_rxtx_proc_t_stub *)proc;
   const fapi_nr_dl_config_csirs_pdu_rel15_t_stub *config_stub =
     (const fapi_nr_dl_config_csirs_pdu_rel15_t_stub *)csirs_config_pdu;
-  const c16_t_oai (*channel_data)[2][1200] = (const c16_t_oai (*)[2][1200])csi_rs_estimated_channel_freq;
   
   uint32_t frame = proc_stub->frame_rx;
   uint32_t slot = proc_stub->nr_slot_rx;
   uint16_t start_rb = config_stub->start_rb;
   uint16_t nr_of_rbs = config_stub->nr_of_rbs;
-  for (int rb = start_rb; rb < start_rb + nr_of_rbs; rb++) {
-    c16_t h_per_rb[12];
-    for (int k = 0; k < 12; k++) {
-      int subcarrier = rb * 12 + k;
-      h_per_rb[k].r = (*channel_data)[0][0][subcarrier].r;
-      h_per_rb[k].i = (*channel_data)[0][0][subcarrier].i;
-    }
-    csi_logging_push_measurement(frame, slot, rb, h_per_rb, 12);
-  }
+  
+  /* Just pass the void pointer directly to the push function */
+  csi_logging_push_measurement(frame, slot, start_rb, csi_rs_estimated_channel_freq, nr_of_rbs);
 }
