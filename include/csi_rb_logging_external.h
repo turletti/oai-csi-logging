@@ -8,14 +8,14 @@
 typedef struct {
   int16_t r;
   int16_t i;
-} c16_t;
+} csi_c16_t;
 
 typedef struct {
   uint32_t frame;
   uint32_t slot;
   uint32_t rb;
   uint16_t num_subcarriers;
-  c16_t h_per_rb[12];
+  csi_c16_t h_per_rb[12];
 } csi_rb_measurement_t;
 
 typedef struct {
