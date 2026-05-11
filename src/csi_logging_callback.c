@@ -101,7 +101,10 @@ int csi_logging_push_measurement(uint32_t frame, uint32_t slot, uint32_t rb,
   meas.slot = slot;
   meas.rb = rb;
   meas.num_subcarriers = num_subcarriers;
-  memcpy(meas.h_per_rb, h_data, num_subcarriers * sizeof(csi_c16_t));
-
+  const int16_t *p = (const int16_t *)h_data;
+  for (uint32_t i = 0; i < num_subcarriers; i++) {
+    meas.h_per_rb_r[i] = p[2*i];
+    meas.h_per_rb_i[i] = p[2*i+1];
+  }
   return csi_ring_buffer_push(&csi_buffer, &meas);
 }
