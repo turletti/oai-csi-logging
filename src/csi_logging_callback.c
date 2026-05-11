@@ -53,7 +53,7 @@ static void *csi_logging_thread_func(void *arg) {
       for (int sc = 0; sc < meas.num_subcarriers; sc++) {
         fprintf(fp, "%u,%u,%u,%d,%d,%d\n",
                 meas.frame, meas.slot, meas.rb, sc,
-                meas.h_per_rb[sc].r, meas.h_per_rb[sc].i);
+                meas.h_per_rb_r[sc], meas.h_per_rb_i[sc]);
       }
       fflush(fp);
     } else {
