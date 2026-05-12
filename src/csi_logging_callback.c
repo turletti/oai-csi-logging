@@ -15,26 +15,39 @@ static pthread_t logging_thread;
 static int logging_active = 0;
 static char csi_output_file_buf[512] = "/tmp/csi_per_rb.csv";
 
-__attribute__((constructor))
-static void csi_logging_auto_init(void) {
+static int csi_init_done = 0;
+
+int csi_logging_init_from_env(void) {
+  if (csi_init_done) {
+    fprintf(stderr, "[CSI] Already initialized\n");
+    return 0;
+  }
   const char *enabled = getenv("CSI_LOGGING_ENABLED");
   const char *output_dir = getenv("CSI_OUTPUT_DIR");
-  
-  if (!enabled || atoi(enabled) != 1)
-    return;
-  
+  fprintf(stderr, "[CSI] Environment check: CSI_LOGGING_ENABLED=%s\n", 
+          enabled ? enabled : "NOT SET");
+  if (!enabled || atoi(enabled) != 1) {
+    fprintf(stderr, "[CSI] CSI logging disabled\n");
+    return 0;
+  }
+  fprintf(stderr, "[CSI] Initializing CSI logging...\n");
   char filepath[512];
   if (output_dir) {
     snprintf(filepath, sizeof(filepath), "%s/csi_per_rb.csv", output_dir);
   } else {
     snprintf(filepath, sizeof(filepath), "/tmp/csi_per_rb.csv");
   }
-  
-  csi_logging_init(filepath);
-  
+  fprintf(stderr, "[CSI] Output file: %s\n", filepath);
+  if (csi_logging_init(filepath) < 0) {
+    fprintf(stderr, "[CSI] ERROR: csi_logging_init failed\n");
+    return -1;
+  }
   extern void csi_rb_logging_callback_impl(const void *, const void *, const void *, const void *);
   csi_rb_logging_callback = csi_rb_logging_callback_impl;
   csi_rb_logging_enabled = 1;
+  csi_init_done = 1;
+  fprintf(stderr, "[CSI] Initialization complete\n");
+  return 0;
 }
 
 static void *csi_logging_thread_func(void *arg) {
