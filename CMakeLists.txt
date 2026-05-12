@@ -6,7 +6,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -fPIC")
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-add_library(csi_logging SHARED
+add_library(csi_logging STATIC
   src/csi_ring_buffer.c
   src/csi_logging_callback.c
   src/csi_oai_wrapper.c
