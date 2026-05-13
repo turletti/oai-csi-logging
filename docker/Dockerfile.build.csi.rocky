@@ -59,7 +59,7 @@ RUN chmod +x patch_csi_rx.sh patch_srs_ul.sh && \
 # 1. Include csi_linking.cmake (which links libcsi_logging to executables)
 # 2. Add csi_integration.c to compilation
 RUN bash apply_csi_cmake.sh && \
-    sed -i '/openair1\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/a \  openair1/PHY/NR_UE_TRANSPORT/csi_integration.c' CMakeLists.txt && \
+    awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/ {print; print "  ${OPENAIR1_DIR}/PHY/NR_UE_TRANSPORT/csi_integration.c"; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
     echo "✅ CMakeLists.txt updated: csi_linking.cmake included and csi_integration.c added"
 
 # Build OAI with CSI support
