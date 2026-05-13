@@ -25,7 +25,7 @@
 #
 #---------------------------------------------------------------------
 
-# STAGE 1: Build libcsi_logging and prepare CSI files
+# STAGE 1: Build libcsi_logging library
 FROM ran-base:latest AS csi-builder
 RUN cd /tmp && \
     git clone https://github.com/turletti/oai-csi-logging.git && \
@@ -33,47 +33,36 @@ RUN cd /tmp && \
     mkdir -p build && cd build && \
     source /opt/rh/gcc-toolset-13/enable && \
     cmake .. && make && make install && ldconfig && \
-    echo "✅ libcsi_logging built and installed"
+    echo "✅ libcsi_logging.a built and installed to /usr/local/lib"
 
 # STAGE 2: Build OAI with CSI integration
 FROM ran-base:latest AS ran-build-csi
 ARG E2AP_VERSION=E2AP_V3
 ARG KPM_VERSION=KPM_V3_00
 
-# Copy CSI library from stage 1
+# Copy libcsi_logging from stage 1
 COPY --from=csi-builder /usr/local/lib/libcsi_logging.a /usr/local/lib/
 COPY --from=csi-builder /usr/local/include/csi*.h /usr/local/include/
 
-# Copy OAI source
+# Copy OAI source (includes CSI files already at root)
 RUN rm -Rf /oai-ran
 WORKDIR /oai-ran
 COPY . .
 
-# Copy CSI integration files from stage 1 
-COPY --from=csi-builder /tmp/oai-csi-logging/docker/patch-scripts/csi_integration.c /tmp/
-COPY --from=csi-builder /tmp/oai-csi-logging/docker/patch-scripts/patch_csi_rx.sh /tmp/
-COPY --from=csi-builder /tmp/oai-csi-logging/docker/patch-scripts/patch_srs_ul.sh /tmp/
+# Apply CSI patches to OAI source
+RUN chmod +x patch_csi_rx.sh patch_srs_ul.sh && \
+    ./patch_csi_rx.sh && \
+    ./patch_srs_ul.sh && \
+    echo "✅ CSI patches applied (csi_rx.c and nr_ul_channel_estimation.c)"
 
-# Place csi_integration.c where it will be compiled
-RUN cp /tmp/csi_integration.c openair1/PHY/NR_UE_TRANSPORT/ && \
-    echo "✅ Copied csi_integration.c to NR_UE_TRANSPORT"
+# Update CMakeLists.txt to:
+# 1. Include csi_linking.cmake (which links libcsi_logging to executables)
+# 2. Add csi_integration.c to compilation
+RUN bash apply_csi_cmake.sh && \
+    sed -i '/openair1\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/a \  openair1/PHY/NR_UE_TRANSPORT/csi_integration.c' CMakeLists.txt && \
+    echo "✅ CMakeLists.txt updated: csi_linking.cmake included and csi_integration.c added"
 
-# Apply CSI patches
-RUN chmod +x /tmp/patch_csi_rx.sh /tmp/patch_srs_ul.sh && \
-    /tmp/patch_csi_rx.sh && \
-    /tmp/patch_srs_ul.sh && \
-    echo "✅ CSI patches applied"
-
-# Add csi_integration.c to CMakeLists.txt for compilation
-RUN sed -i '/src\/csi_rx\.c/a \  ${OPENAIR1_DIR}/PHY/NR_UE_TRANSPORT/csi_integration.c' CMakeLists.txt && \
-    echo "✅ Added csi_integration.c to CMakeLists.txt"
-
-# Link libcsi_logging
-RUN sed -i 's/target_link_libraries(nr-softmodem PRIVATE/target_link_libraries(nr-softmodem PRIVATE csi_logging/' CMakeLists.txt && \
-    sed -i 's/target_link_libraries(nr-uesoftmodem PRIVATE/target_link_libraries(nr-uesoftmodem PRIVATE csi_logging/' CMakeLists.txt && \
-    echo "✅ Linked csi_logging to executables"
-
-# Build OAI
+# Build OAI with CSI support
 RUN dnf install -y dnf-plugins-core && \
     dnf config-manager --set-enabled crb && \
     dnf install -y \
@@ -96,7 +85,7 @@ RUN dnf install -y dnf-plugins-core && \
       --build-tool-opt -k10 -w USRP -t Ethernet --noavx512 && \
     echo "✅ OAI build with CSI SUCCESSFUL"
 
-# Build FlexRIC
+# Build FlexRIC for SM Models
 RUN mkdir -p openair2/E2AP/flexric/build && \
     cd openair2/E2AP/flexric/build && \
     source /opt/rh/gcc-toolset-13/enable && \
@@ -104,4 +93,5 @@ RUN mkdir -p openair2/E2AP/flexric/build && \
           -DKPM_VERSION=$KPM_VERSION \
           -DE2AP_VERSION=$E2AP_VERSION .. && \
     ninja && \
-    ninja install
+    ninja install && \
+    echo "✅ FlexRIC build SUCCESSFUL"
