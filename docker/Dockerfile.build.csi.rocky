@@ -58,6 +58,8 @@ RUN chmod +x patch_csi_rx.sh patch_srs_ul.sh && \
 # Update CMakeLists.txt to:
 # 1. Include csi_linking.cmake (which links libcsi_logging to executables)
 # 2. Add csi_integration.c to compilation
+RUN cp csi_integration.c openair1/PHY/NR_UE_TRANSPORT/ && \
+    echo "✅ csi_integration.c copied to NR_UE_TRANSPORT"
 RUN bash apply_csi_cmake.sh && \
     awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/ {print; print "  ${OPENAIR1_DIR}/PHY/NR_UE_TRANSPORT/csi_integration.c"; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
     echo "✅ CMakeLists.txt updated: csi_linking.cmake included and csi_integration.c added"
