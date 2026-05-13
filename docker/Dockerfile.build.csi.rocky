@@ -25,52 +25,59 @@
 #
 #---------------------------------------------------------------------
 
-# STAGE 1: Build libcsi_logging library
-FROM ran-base:latest AS csi-builder
-RUN cd /tmp && \
-    git clone https://github.com/turletti/oai-csi-logging.git && \
-    cd oai-csi-logging && \
-    mkdir -p build && cd build && \
-    source /opt/rh/gcc-toolset-13/enable && \
-    cmake .. && make && make install && ldconfig && \
-    echo "✅ libcsi_logging.a built and installed to /usr/local/lib"
-
-# STAGE 2: Build OAI with CSI integration
 FROM ran-base:latest AS ran-build-csi
 ARG E2AP_VERSION=E2AP_V3
 ARG KPM_VERSION=KPM_V3_00
 
-# Copy libcsi_logging from stage 1
-COPY --from=csi-builder /usr/local/lib/libcsi_logging.a /usr/local/lib/
-COPY --from=csi-builder /usr/local/include/csi*.h /usr/local/include/
+# STEP 1: Build CSI logging library as STATIC
+RUN cd /tmp && \
+    git clone https://github.com/turletti/oai-csi-logging.git && \
+    cd oai-csi-logging && \
+    sed -i '/^#endif/i /* Public API for pushing CSI measurements */\nint csi_logging_push_measurement(uint32_t frame, uint32_t slot, uint32_t rb, const void *h_data, uint32_t num_subcarriers);' include/csi_rb_logging_external.h && \
+    sed -i 's/^static int csi_logging_push_measurement/int csi_logging_push_measurement/' src/csi_logging_callback.c && \
+    sed -i 's/add_library(csi_logging SHARED/add_library(csi_logging STATIC/' CMakeLists.txt && \
+    mkdir -p build && cd build && \
+    source /opt/rh/gcc-toolset-13/enable && \
+    CFLAGS='-Wl,-z,noexecstack -fPIC -Wall -Wextra' \
+    CXXFLAGS='-Wl,-z,noexecstack -fPIC -Wall -Wextra' \
+    cmake .. && make && make install && ldconfig && \
+    cp /tmp/oai-csi-logging/include/*.h /usr/include/ && \
+    echo "✅ libcsi_logging STATIC library built and installed"
 
-# Copy OAI source (includes CSI files already at root)
+# STEP 2: Prepare OAI source
 RUN rm -Rf /oai-ran
 WORKDIR /oai-ran
 COPY . .
 
-# Apply CSI patches to OAI source
+# STEP 3: Copy csi_integration.c to both required locations
+RUN cp csi_integration.c openair1/PHY/NR_ESTIMATION/ && \
+    cp csi_integration.c openair1/PHY/NR_UE_TRANSPORT/ && \
+    echo "✅ csi_integration.c copied to NR_ESTIMATION and NR_UE_TRANSPORT"
+
+# STEP 4: Apply CSI patches using robust awk (no line numbers)
 RUN chmod +x patch_csi_rx.sh patch_srs_ul.sh && \
-    ./patch_csi_rx.sh && \
-    ./patch_srs_ul.sh && \
-    echo "✅ CSI patches applied (csi_rx.c and nr_ul_channel_estimation.c)"
+    bash patch_csi_rx.sh && \
+    bash patch_srs_ul.sh && \
+    echo "✅ CSI patches applied to csi_rx.c and nr_ul_channel_estimation.c"
 
-# Update CMakeLists.txt to:
-# 1. Include csi_linking.cmake (which links libcsi_logging to executables)
-# 2. Add csi_integration.c to compilation
-RUN cp csi_integration.c openair1/PHY/NR_UE_TRANSPORT/ && \
-    echo "✅ csi_integration.c copied to NR_UE_TRANSPORT"
-RUN bash apply_csi_cmake.sh && \
-    awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/ {print; print "  ${OPENAIR1_DIR}/PHY/NR_UE_TRANSPORT/csi_integration.c"; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
-    echo "✅ CMakeLists.txt updated: csi_linking.cmake included and csi_integration.c added"
+# STEP 5: Add csi_integration.c to CMakeLists.txt using robust awk
+# Add after nr_ul_channel_estimation.c
+RUN awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/ && !done_ul {print; print "  ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_integration.c"; done_ul=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
+    echo "✅ Added csi_integration.c to NR_ESTIMATION section"
 
-# Build OAI with CSI support
+# Add after csi_rx.c
+RUN awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/ && !done_ue {print; print "  ${OPENAIR1_DIR}/PHY/NR_UE_TRANSPORT/csi_integration.c"; done_ue=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
+    echo "✅ Added csi_integration.c to NR_UE_TRANSPORT section"
+
+# STEP 6: Link csi_logging to nr-softmodem and nr-uesoftmodem using robust awk
+RUN awk '/target_link_libraries\(nr-softmodem PRIVATE/ {in_target=1} in_target && /-Wl,--end-group/ && !done_soft {print "  csi_logging"; done_soft=1} {print}' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
+    echo "✅ Linked csi_logging to nr-softmodem"
+
+RUN awk '/target_link_libraries\(nr-uesoftmodem PRIVATE/ {in_target=1} in_target && /-Wl,--end-group/ && !done_ue {print "  csi_logging"; done_ue=1} {print}' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
+    echo "✅ Linked csi_logging to nr-uesoftmodem"
 RUN dnf install -y dnf-plugins-core && \
     dnf config-manager --set-enabled crb && \
-    dnf install -y \
-        gcc-toolset-13 \
-        gcc-toolset-13-gcc-c++ \
-        gcc-toolset-13-binutils && \
+    dnf install -y gcc-toolset-13 gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils && \
     /bin/sh oaienv && \
     cd cmake_targets && \
     mkdir -p log && \
@@ -87,7 +94,7 @@ RUN dnf install -y dnf-plugins-core && \
       --build-tool-opt -k10 -w USRP -t Ethernet --noavx512 && \
     echo "✅ OAI build with CSI SUCCESSFUL"
 
-# Build FlexRIC for SM Models
+# STEP 9: Build FlexRIC for SM Models
 RUN mkdir -p openair2/E2AP/flexric/build && \
     cd openair2/E2AP/flexric/build && \
     source /opt/rh/gcc-toolset-13/enable && \
