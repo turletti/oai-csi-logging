@@ -2,8 +2,8 @@
 #define CSI_LOGGING_INIT_H
 
 int csi_logging_init(const char *output_file);
-void csi_logging_cleanup(void);
 int csi_logging_init_from_env(void);
+int csi_logging_start_thread(void);
+void csi_logging_cleanup(void);
 
-#endif /* CSI_LOGGING_INIT_H */
-
+#endif
