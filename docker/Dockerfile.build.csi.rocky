@@ -61,7 +61,7 @@ RUN export OAI_DIR=/oai-ran && \
     chmod +x patch_csi_rx.sh patch_srs_ul.sh && \
     bash patch_csi_rx.sh && \
     bash patch_srs_ul.sh && \
-    bash patch_csi_init_main.sh &&
+    bash patch_csi_init_main.sh bash patch_csi_init_main.sh &&bash patch_csi_init_main.sh && \
     echo "✅ CSI patches applied (csi_rx.c and nr_ul_channel_estimation.c)"
 
 # Update CMakeLists.txt: add csi_integration.c to compilation
