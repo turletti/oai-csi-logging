@@ -21,7 +21,7 @@
 #---------------------------------------------------------------------
 #
 # Dockerfile for the Open-Air-Interface BUILD service with CSI LOGGING
-#   Valid for Rocky 9 - FINAL CORRECTED VERSION WITH CSI INIT
+#   Valid for Rocky 9 - FINAL VALIDATED VERSION
 #
 #---------------------------------------------------------------------
 
@@ -33,7 +33,7 @@ RUN cd /tmp && \
     mkdir -p build && cd build && \
     source /opt/rh/gcc-toolset-13/enable && \
     cmake .. && make && make install && ldconfig && \
-    echo "✅ libcsi_logging.a built and installed to /usr/local/lib"
+    echo "✅ libcsi_logging.a built and installed"
 
 # STAGE 2: Build OAI with CSI integration
 FROM ran-base:latest AS ran-build-csi
@@ -54,28 +54,28 @@ COPY . .
 # Copy csi_integration.c to both required locations
 RUN cp csi_integration.c openair1/PHY/NR_ESTIMATION/ && \
     cp csi_integration.c openair1/PHY/NR_UE_TRANSPORT/ && \
-    echo "✅ csi_integration.c copied to NR_ESTIMATION and NR_UE_TRANSPORT"
+    echo "✅ csi_integration.c copied"
 
-# Apply CSI patches to OAI source
+# Apply CSI patches
 RUN export OAI_DIR=/oai-ran && \
     chmod +x patch_csi_rx.sh patch_srs_ul.sh patch_csi_init_main.sh && \
     bash patch_csi_rx.sh && \
     bash patch_srs_ul.sh && \
     bash patch_csi_init_main.sh && \
-    echo "✅ CSI patches applied (csi_rx.c, nr_ul_channel_estimation.c, nr-softmodem.c)"
+    echo "✅ CSI patches applied"
 
-# Update CMakeLists.txt: add csi_integration.c to compilation
+# Update CMakeLists.txt
 RUN bash apply_csi_cmake.sh && \
     awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/ && !done_ul {print; print "  ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_integration.c"; done_ul=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
     awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/ && !done_ue {print; print "  ${OPENAIR1_DIR}/PHY/NR_UE_TRANSPORT/csi_integration.c"; done_ue=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
-    echo "✅ CMakeLists.txt updated: csi_integration.c added to both locations"
+    echo "✅ CMakeLists.txt updated"
 
-# Link csi_logging to nr-softmodem and nr-uesoftmodem
+# Link csi_logging to targets
 RUN awk '/target_link_libraries\(nr-softmodem PRIVATE/ {in_target=1} in_target && /-Wl,--end-group/ && !done_soft {print "  csi_logging"; done_soft=1} {print}' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
     awk '/target_link_libraries\(nr-uesoftmodem PRIVATE/ {in_target=1} in_target && /-Wl,--end-group/ && !done_ue {print "  csi_logging"; done_ue=1} {print}' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
-    echo "✅ csi_logging linked to nr-softmodem and nr-uesoftmodem"
+    echo "✅ csi_logging linked"
 
-# Build OAI with CSI support
+# Build OAI
 RUN dnf install -y dnf-plugins-core && \
     dnf config-manager --set-enabled crb && \
     dnf install -y gcc-toolset-13 gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils && \
@@ -85,20 +85,19 @@ RUN dnf install -y dnf-plugins-core && \
     source /opt/rh/gcc-toolset-13/enable && \
     CXXFLAGS='-Werror=format -fstack-protector-strong' \
     CFLAGS='-Werror=format -fstack-protector-strong' \
-    ./build_oai -c --ninja \
-      --eNB --gNB --RU --UE --nrUE \
-      --build-e2 --cmake-opt -DE2AP_VERSION=$E2AP_VERSION \
+    ./build_oai -c --ninja --eNB --gNB --RU --UE --nrUE --build-e2 \
+      --cmake-opt -DE2AP_VERSION=$E2AP_VERSION \
       --cmake-opt -DKPM_VERSION=$KPM_VERSION \
       --cmake-opt '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,noexecstack' \
       --cmake-opt '-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,noexecstack' \
       --build-lib 'telnetsrv enbscope uescope nrscope' \
       --build-tool-opt -k10 -w USRP -t Ethernet --noavx512 && \
-    echo "✅ OAI build with CSI SUCCESSFUL"
+    echo "✅ OAI build SUCCESSFUL"
 
-# Build FlexRIC for SM Models
+# Build FlexRIC
 RUN mkdir -p openair2/E2AP/flexric/build && \
     cd openair2/E2AP/flexric/build && \
     source /opt/rh/gcc-toolset-13/enable && \
     cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DKPM_VERSION=$KPM_VERSION -DE2AP_VERSION=$E2AP_VERSION .. && \
     ninja && ninja install && \
-    echo "✅ FlexRIC build SUCCESSFUL"
+    echo "✅ FlexRIC SUCCESSFUL"
