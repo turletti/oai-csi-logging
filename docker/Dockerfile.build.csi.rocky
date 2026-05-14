@@ -21,7 +21,7 @@
 #---------------------------------------------------------------------
 #
 # Dockerfile for the Open-Air-Interface BUILD service with CSI LOGGING
-#   Valid for Rocky 9
+#   Valid for Rocky 9 - FINAL CORRECTED VERSION
 #
 #---------------------------------------------------------------------
 
@@ -42,16 +42,19 @@ ARG KPM_VERSION=KPM_V3_00
 
 # Copy libcsi_logging from stage 1
 COPY --from=csi-builder /usr/local/lib/libcsi_logging.a /usr/local/lib/
-COPY --from=csi-builder /usr/local/include/csi*.h /usr/local/include/
+COPY --from=csi-builder /usr/local/include/csi_logging_init.h /usr/local/include/
+COPY --from=csi-builder /usr/local/include/csi_oai_wrapper.h /usr/local/include/
+COPY --from=csi-builder /usr/local/include/csi_rb_logging_external.h /usr/local/include/
 
-# Copy OAI source (includes CSI files already at root)
+# Copy OAI source
 RUN rm -Rf /oai-ran
 WORKDIR /oai-ran
 COPY . .
 
-# Copy csi_integration.c to correct location
-RUN cp csi_integration.c openair1/PHY/NR_UE_TRANSPORT/ && \
-    echo "✅ csi_integration.c copied to NR_UE_TRANSPORT"
+# Copy csi_integration.c to both required locations
+RUN cp csi_integration.c openair1/PHY/NR_ESTIMATION/ && \
+    cp csi_integration.c openair1/PHY/NR_UE_TRANSPORT/ && \
+    echo "✅ csi_integration.c copied to NR_ESTIMATION and NR_UE_TRANSPORT"
 
 # Apply CSI patches to OAI source
 RUN export OAI_DIR=/oai-ran && \
@@ -60,20 +63,21 @@ RUN export OAI_DIR=/oai-ran && \
     bash patch_srs_ul.sh && \
     echo "✅ CSI patches applied (csi_rx.c and nr_ul_channel_estimation.c)"
 
-# Update CMakeLists.txt to:
-# 1. Include csi_linking.cmake (which links libcsi_logging to executables)
-# 2. Add csi_integration.c to compilation
+# Update CMakeLists.txt: add csi_integration.c to compilation
 RUN bash apply_csi_cmake.sh && \
-    sed -i '/openair1\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/a \  openair1/PHY/NR_UE_TRANSPORT/csi_integration.c' CMakeLists.txt && \
-    echo "✅ CMakeLists.txt updated: csi_linking.cmake included and csi_integration.c added"
+    awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/ && !done_ul {print; print "  ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_integration.c"; done_ul=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
+    awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/ && !done_ue {print; print "  ${OPENAIR1_DIR}/PHY/NR_UE_TRANSPORT/csi_integration.c"; done_ue=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
+    echo "✅ CMakeLists.txt updated: csi_integration.c added to both locations"
+
+# Link csi_logging to nr-softmodem and nr-uesoftmodem
+RUN awk '/target_link_libraries\(nr-softmodem PRIVATE/ {in_target=1} in_target && /-Wl,--end-group/ && !done_soft {print "  csi_logging"; done_soft=1} {print}' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
+    awk '/target_link_libraries\(nr-uesoftmodem PRIVATE/ {in_target=1} in_target && /-Wl,--end-group/ && !done_ue {print "  csi_logging"; done_ue=1} {print}' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
+    echo "✅ csi_logging linked to nr-softmodem and nr-uesoftmodem"
 
 # Build OAI with CSI support
 RUN dnf install -y dnf-plugins-core && \
     dnf config-manager --set-enabled crb && \
-    dnf install -y \
-        gcc-toolset-13 \
-        gcc-toolset-13-gcc-c++ \
-        gcc-toolset-13-binutils && \
+    dnf install -y gcc-toolset-13 gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils && \
     /bin/sh oaienv && \
     cd cmake_targets && \
     mkdir -p log && \
@@ -94,9 +98,6 @@ RUN dnf install -y dnf-plugins-core && \
 RUN mkdir -p openair2/E2AP/flexric/build && \
     cd openair2/E2AP/flexric/build && \
     source /opt/rh/gcc-toolset-13/enable && \
-    cmake -GNinja -DCMAKE_BUILD_TYPE=Release \
-          -DKPM_VERSION=$KPM_VERSION \
-          -DE2AP_VERSION=$E2AP_VERSION .. && \
-    ninja && \
-    ninja install && \
+    cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DKPM_VERSION=$KPM_VERSION -DE2AP_VERSION=$E2AP_VERSION .. && \
+    ninja && ninja install && \
     echo "✅ FlexRIC build SUCCESSFUL"
