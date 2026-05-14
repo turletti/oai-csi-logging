@@ -64,9 +64,9 @@ COPY --from=gnb-base /usr/local/lib64/libuhd.so.4.8.0 /usr/local/lib64
 COPY --from=gnb-base /usr/local/lib64/uhd/utils/uhd_images_downloader.py /opt/oai-gnb/bin
 # Copy CSI logging library and headers
 COPY --from=gnb-build /usr/local/lib/libcsi_logging.a /usr/local/lib/
-COPY --from=gnb-build /usr/local/include/csi_logging_init.h /usr/local/include/
-COPY --from=gnb-build /usr/local/include/csi_oai_wrapper.h /usr/local/include/
-COPY --from=gnb-build /usr/local/include/csi_rb_logging_external.h /usr/local/include/
+COPY --from=ran-build-csi:latest /usr/local/include/csi_logging_init.h /usr/local/include/
+COPY --from=ran-build-csi:latest /usr/local/include/csi_oai_wrapper.h /usr/local/include/
+COPY --from=ran-build-csi:latest /usr/local/include/csi_rb_logging_external.h /usr/local/include/
 
 COPY --from=gnb-build /usr/local/lib64/flexric /usr/local/lib/flexric
 WORKDIR /usr/local/share/uhd/rfnoc
