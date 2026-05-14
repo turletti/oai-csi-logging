@@ -64,6 +64,11 @@ RUN export OAI_DIR=/oai-ran && \
     bash patch_csi_init_main.sh && \
     echo "✅ CSI patches applied"
 
+# Verify patches were applied
+RUN grep "nr_csi_logging_invoke" /oai-ran/openair1/PHY/NR_UE_TRANSPORT/csi_rx.c || (echo "❌ PATCH FAILED - csi_rx.c" && exit 1)
+RUN grep "nr_srs_csi_logging_invoke" /oai-ran/openair1/PHY/NR_ESTIMATION/nr_ul_channel_estimation.c || (echo "❌ PATCH FAILED - nr_ul_channel_estimation.c" && exit 1)
+RUN grep "csi_logging_init_from_env" /oai-ran/executables/nr-softmodem.c || (echo "❌ PATCH FAILED - nr-softmodem.c" && exit 1)
+
 # Update CMakeLists.txt
 RUN bash apply_csi_cmake.sh && \
     awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/ && !done_ul {print; print "  ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_integration.c"; done_ul=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
