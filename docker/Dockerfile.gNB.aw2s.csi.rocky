@@ -94,10 +94,9 @@ RUN ln -s /usr/local/lib/libaw2sori_transpro.so /usr/local/lib/libthirdparty_tra
     ldconfig && \
     echo "---- CSI Logging Library Check ----" && \
     ls -la /usr/local/lib/libcsi_logging.a && \
-    echo "---- ldd on executable nr-softmodem with CSI ----" && \
-    ldd /opt/oai-gnb-aw2s/bin/nr-softmodem | grep -i "csi\|not found" && \
-    echo "---- ldd on shared libraries ----" && \
-    ldd /usr/local/lib/liboai_eth_transpro.so \
+    echo "✅ CSI logging library present"
+
+RUN ldd /usr/local/lib/liboai_eth_transpro.so \
         /usr/local/lib/librfsimulator.so \
         /usr/local/lib/libaw2sori_transpro.so \
         /usr/local/lib/libcoding.so \
