@@ -21,7 +21,7 @@
 #---------------------------------------------------------------------
 #
 # Dockerfile for the Open-Air-Interface BUILD service with CSI LOGGING
-#   Valid for Rocky 9 - FINAL CORRECTED VERSION
+#   Valid for Rocky 9 - FINAL CORRECTED VERSION WITH CSI INIT
 #
 #---------------------------------------------------------------------
 
@@ -58,11 +58,11 @@ RUN cp csi_integration.c openair1/PHY/NR_ESTIMATION/ && \
 
 # Apply CSI patches to OAI source
 RUN export OAI_DIR=/oai-ran && \
-    chmod +x patch_csi_rx.sh patch_srs_ul.sh && \
+    chmod +x patch_csi_rx.sh patch_srs_ul.sh patch_csi_init_main.sh && \
     bash patch_csi_rx.sh && \
     bash patch_srs_ul.sh && \
-    bash patch_csi_init_main.sh bash patch_csi_init_main.sh &&bash patch_csi_init_main.sh && \
-    echo "✅ CSI patches applied (csi_rx.c and nr_ul_channel_estimation.c)"
+    bash patch_csi_init_main.sh && \
+    echo "✅ CSI patches applied (csi_rx.c, nr_ul_channel_estimation.c, nr-softmodem.c)"
 
 # Update CMakeLists.txt: add csi_integration.c to compilation
 RUN bash apply_csi_cmake.sh && \
