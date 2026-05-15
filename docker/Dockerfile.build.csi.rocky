@@ -58,10 +58,11 @@ RUN cp csi_integration.c openair1/PHY/NR_ESTIMATION/ && \
 
 # Apply CSI patches
 RUN export OAI_DIR=/oai-ran && \
-    chmod +x patch_csi_rx.sh patch_srs_ul.sh patch_csi_init_main.sh && \
+    chmod +x patch_csi_rx.sh patch_srs_ul.sh patch_csi_init_main.sh patch_ue_srs_capability.sh && \
     bash patch_csi_rx.sh && \
     bash patch_srs_ul.sh && \
     bash patch_csi_init_main.sh && \
+    bash patch_ue_srs_capability.sh && \
     echo "✅ CSI patches applied"
 
 # Verify patches were applied
