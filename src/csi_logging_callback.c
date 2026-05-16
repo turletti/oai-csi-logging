@@ -41,6 +41,7 @@ int csi_logging_init_from_env(void) {
   extern void csi_rb_logging_callback_impl(const void *, const void *, const void *, const void *);
   csi_rb_logging_callback = csi_rb_logging_callback_impl;
   csi_rb_logging_enabled = 1;
+  csi_logging_start_thread();
   csi_init_done = 1;
   fprintf(stderr, "[CSI] Initialization complete\n");
   return 0;
