@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+
 int csi_rb_logging_enabled = 0;
 void (*csi_rb_logging_callback)(const void *, const void *, const void *, const void *) = NULL;
 static csi_ring_buffer_t csi_buffer;
@@ -13,6 +14,7 @@ static pthread_t logging_thread;
 static int logging_active = 0;
 static char csi_output_file_buf[512] = "/tmp/csi_per_rb.csv";
 static int csi_init_done = 0;
+
 int csi_logging_init_from_env(void) {
   if (csi_init_done) {
     fprintf(stderr, "[CSI] Already initialized\n");
@@ -46,6 +48,7 @@ int csi_logging_init_from_env(void) {
   fprintf(stderr, "[CSI] Initialization complete\n");
   return 0;
 }
+
 static void *csi_logging_thread_func(void *arg) {
   FILE *fp = fopen(csi_output_file_buf, "w");
   if (!fp) {
@@ -70,6 +73,7 @@ static void *csi_logging_thread_func(void *arg) {
   fclose(fp);
   return NULL;
 }
+
 int csi_logging_init(const char *output_file) {
   static int _initialized = 0;
   if (_initialized) return 0;
@@ -80,9 +84,9 @@ int csi_logging_init(const char *output_file) {
   if (csi_ring_buffer_init(&csi_buffer, 1000) < 0)
     return -1;
   logging_active = 1;
-  // THREAD NOT CREATED HERE - deferred to csi_logging_start_thread()
   return 0;
 }
+
 int csi_logging_start_thread(void) {
   if (logging_thread) return 0;
   if (pthread_create(&logging_thread, NULL, csi_logging_thread_func, NULL) < 0) {
@@ -91,25 +95,39 @@ int csi_logging_start_thread(void) {
   }
   return 0;
 }
+
 void csi_logging_cleanup(void) {
   logging_active = 0;
   if (logging_thread)
     pthread_join(logging_thread, NULL);
   csi_ring_buffer_free(&csi_buffer);
 }
+
 int csi_logging_push_measurement(uint32_t frame, uint32_t slot, uint32_t rb,
                                   const void *h_data, uint32_t num_subcarriers) {
   if (!h_data || num_subcarriers > 12)
     return -1;
+  
+  const int16_t *p = (const int16_t *)h_data;
+  
+  /* Debug: log first measurement from each RB */
+  static int logged_rbs = 0;
+  if (rb < 5 && logged_rbs < 5) {
+    fprintf(stderr, "[CSI_DEBUG] frame=%u slot=%u rb=%u num_sc=%u: I/Q[0]=%d+%dj [1]=%d+%dj [2]=%d+%dj\n",
+            frame, slot, rb, num_subcarriers,
+            p[0], p[1], p[2], p[3], p[4], p[5]);
+    if (rb == 4) logged_rbs++;
+  }
+  
   csi_rb_measurement_t meas;
   meas.frame = frame;
   meas.slot = slot;
   meas.rb = rb;
   meas.num_subcarriers = num_subcarriers;
-  const int16_t *p = (const int16_t *)h_data;
+  const int16_t *p2 = (const int16_t *)h_data;
   for (uint32_t i = 0; i < num_subcarriers; i++) {
-    meas.h_per_rb_r[i] = p[2*i];
-    meas.h_per_rb_i[i] = p[2*i+1];
+    meas.h_per_rb_r[i] = p2[2*i];
+    meas.h_per_rb_i[i] = p2[2*i+1];
   }
   return csi_ring_buffer_push(&csi_buffer, &meas);
 }
