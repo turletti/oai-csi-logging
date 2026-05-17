@@ -50,7 +50,6 @@ COPY --from=csi-builder /usr/local/include/csi_rb_logging_external.h /usr/local/
 RUN rm -Rf /oai-ran
 WORKDIR /oai-ran
 COPY . .
-COPY docker/patch-scripts/csi_linking.cmake .
 
 # Copy csi_integration.c to both required locations
 RUN cp csi_integration.c openair1/PHY/NR_ESTIMATION/ && \
