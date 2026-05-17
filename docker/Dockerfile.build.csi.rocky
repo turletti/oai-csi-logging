@@ -21,7 +21,7 @@
 #---------------------------------------------------------------------
 #
 # Dockerfile for the Open-Air-Interface BUILD service with CSI LOGGING
-#   Valid for Rocky 9 - FINAL VALIDATED VERSION
+#   Valid for Rocky 9
 #
 #---------------------------------------------------------------------
 
@@ -50,6 +50,7 @@ COPY --from=csi-builder /usr/local/include/csi_rb_logging_external.h /usr/local/
 RUN rm -Rf /oai-ran
 WORKDIR /oai-ran
 COPY . .
+COPY docker/patch-scripts/csi_linking.cmake .
 
 # Copy csi_integration.c to both required locations
 RUN cp csi_integration.c openair1/PHY/NR_ESTIMATION/ && \
@@ -75,11 +76,6 @@ RUN bash apply_csi_cmake.sh && \
     awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/ && !done_ul {print; print "  ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_integration.c"; done_ul=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
     awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/ && !done_ue {print; print "  ${OPENAIR1_DIR}/PHY/NR_UE_TRANSPORT/csi_integration.c"; done_ue=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
     echo "✅ CMakeLists.txt updated"
-
-# Link csi_logging to targets
-RUN awk '/target_link_libraries\(nr-softmodem PRIVATE/ {in_target=1} in_target && /-Wl,--end-group/ && !done_soft {print "  csi_logging"; done_soft=1} {print}' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
-    awk '/target_link_libraries\(nr-uesoftmodem PRIVATE/ {in_target=1} in_target && /-Wl,--end-group/ && !done_ue {print "  csi_logging"; done_ue=1} {print}' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
-    echo "✅ csi_logging linked"
 
 # Build OAI
 RUN dnf install -y dnf-plugins-core && \
