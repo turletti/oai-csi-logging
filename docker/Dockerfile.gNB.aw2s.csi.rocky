@@ -97,7 +97,7 @@ RUN ln -s /usr/local/lib/libaw2sori_transpro.so /usr/local/lib/libthirdparty_tra
     ldconfig && \
     echo "---- CSI Logging Library Check ----" && \
     ls -la /usr/local/lib/libcsi_logging.a && \
-    echo "✅ CSI logging library present"
+    echo "✅ CSI logging library present" && \
     echo "---- ldd on executable nr-softmodem ----" && \
     ldd /opt/oai-gnb-aw2s/bin/nr-softmodem && \
     echo "---- ldd on shared libraries ----" && \
