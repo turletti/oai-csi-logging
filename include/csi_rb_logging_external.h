@@ -5,6 +5,7 @@
 typedef struct {
   uint32_t frame;
   uint32_t slot;
+  uint16_t rnti;              /* NEW: RNTI for multi-UE support */
   uint32_t rb;
   uint16_t num_subcarriers;
   int16_t  h_per_rb_r[12];   /* real parts */
@@ -25,10 +26,15 @@ void csi_ring_buffer_free(csi_ring_buffer_t *rb);
 
 int  csi_logging_init(const char *output_file);
 void csi_logging_cleanup(void);
+
 int  csi_logging_push_measurement(uint32_t frame, uint32_t slot, uint32_t rb,
                                    const void *h_data, uint32_t num_subcarriers);
+
+int  csi_logging_push_measurement_with_rnti(uint32_t frame, uint32_t slot, uint16_t rnti, uint32_t rb,
+                                             const void *h_data, uint32_t num_subcarriers);
 
 extern int   csi_rb_logging_enabled;
 extern void (*csi_rb_logging_callback)(const void *, const void *,
                                         const void *, const void *);
+
 #endif

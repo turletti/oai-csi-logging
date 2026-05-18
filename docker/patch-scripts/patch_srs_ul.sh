@@ -5,8 +5,8 @@ FILE="${OAI_DIR:-/oai-ran}/openair1/SCHED_NR/phy_procedures_nr_gNB.c"
 # Add includes
 ! grep -q "#include \"csi_rb_logging_external.h\"" "$FILE" && sed -i '/^#include ".*\.h"/a #include "csi_rb_logging_external.h"' "$FILE" && echo "✅ Added #include"
 
-# Add extern declaration
-! grep -q "extern void nr_srs_csi_logging_invoke" "$FILE" && sed -i '/^extern.*srs_channel/a extern void nr_srs_csi_logging_invoke(uint32_t frame, uint32_t slot, uint16_t start_rb, uint16_t nr_of_rbs, const c16_t srs_estimated_channel_freq[], uint16_t ofdm_symbol_size);' "$FILE" && echo "✅ Added extern"
+# Add extern declaration - WITH RNTI parameter
+! grep -q "extern void nr_srs_csi_logging_invoke" "$FILE" && sed -i '/^extern.*srs_channel/a extern void nr_srs_csi_logging_invoke(uint32_t frame, uint32_t slot, uint16_t rnti, uint16_t start_rb, uint16_t nr_of_rbs, const c16_t srs_estimated_channel_freq[], uint16_t ofdm_symbol_size);' "$FILE" && echo "✅ Added extern"
 
 # Add CSI logging call in nr_srs_rx_procedures - after timing advance stats
 if ! grep -q "nr_srs_csi_logging_invoke.*frame_rx.*slot_rx" "$FILE"; then
@@ -17,11 +17,11 @@ if ! grep -q "nr_srs_csi_logging_invoke.*frame_rx.*slot_rx" "$FILE"; then
       uint16_t start_rb = srs_pdu->bwp_start;\
       uint16_t nr_of_rbs = srs_pdu->bwp_size;\
       for (int ant_rx_ind = 0; ant_rx_ind < nb_antennas_rx; ant_rx_ind++) {\
-        nr_srs_csi_logging_invoke(frame_rx, slot_rx, start_rb, nr_of_rbs,\
+        nr_srs_csi_logging_invoke(frame_rx, slot_rx, srs_pdu->rnti, start_rb, nr_of_rbs,\
                                   (c16_t*)srs_estimated_channel_freq[ant_rx_ind][0],\
                                   ofdm_symbol_size);\
       }\
-    }' "$FILE" && echo "✅ Added CSI logging call"
+    }' "$FILE" && echo "✅ Added CSI logging call with RNTI"
 fi
 
-echo "✅ phy_procedures_nr_gNB.c patched for SRS CSI logging"
+echo "✅ phy_procedures_nr_gNB.c patched for SRS CSI logging with RNTI"

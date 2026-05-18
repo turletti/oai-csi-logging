@@ -12,14 +12,12 @@ void nr_csi_logging_invoke(uint32_t frame, uint32_t slot, uint16_t start_rb,
 {
   if (!csi_rb_logging_enabled) return;
   if (!csi_data_void) return;
-  
   const c16_t *csi_data = (const c16_t *)csi_data_void;
-  
   for (uint16_t rb = start_rb; rb < start_rb + nr_of_rbs; rb++) {
     for (int ant_rx = 0; ant_rx < nb_antennas_rx; ant_rx++) {
       for (uint16_t port_tx = 0; port_tx < nb_ports; port_tx++) {
         uint16_t k_start = rb * 12;
-        uint32_t offset = (ant_rx * nb_ports * ofdm_symbol_size) + 
+        uint32_t offset = (ant_rx * nb_ports * ofdm_symbol_size) +
                           (port_tx * ofdm_symbol_size) + k_start;
         if (offset + 12 <= nb_antennas_rx * nb_ports * ofdm_symbol_size) {
           csi_logging_push_measurement(frame, slot, rb,
@@ -30,7 +28,7 @@ void nr_csi_logging_invoke(uint32_t frame, uint32_t slot, uint16_t start_rb,
   }
 }
 
-void nr_srs_csi_logging_invoke(uint32_t frame, uint32_t slot,
+void nr_srs_csi_logging_invoke(uint32_t frame, uint32_t slot, uint16_t rnti,
     uint16_t start_rb, uint16_t nr_of_rbs,
     const c16_t srs_estimated_channel_freq[], uint16_t ofdm_symbol_size)
 {
@@ -41,7 +39,7 @@ void nr_srs_csi_logging_invoke(uint32_t frame, uint32_t slot,
     uint16_t k_start = rb * 12;
     uint32_t offset = k_start;
     if (offset + 12 <= ofdm_symbol_size) {
-      csi_logging_push_measurement(frame, slot, rb,
+      csi_logging_push_measurement_with_rnti(frame, slot, rnti, rb,
           &srs_estimated_channel_freq[offset], 12);
     }
   }
