@@ -5,7 +5,7 @@
 
 ARG BASE_IMAGE=docker.io/rockylinux:9
 FROM ran-base:latest AS gnb-base
-FROM ran-build-csi-v3:latest AS gnb-build
+FROM ran-build-csi:latest AS gnb-build
 FROM $BASE_IMAGE AS oai-gnb-csi-v3
 
 ENV TZ=Europe/Paris
