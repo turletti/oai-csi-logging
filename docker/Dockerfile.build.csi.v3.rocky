@@ -34,7 +34,7 @@ COPY v3-flexible/apply_csi_v3_cmake.sh .
 COPY v3-flexible .
 
 # Apply CSI v3 patches
-RUN export OAI_DIR=/oai-ran && \
+RUN export OAI_DIR=/oai-ran CSI_V3_DIR=/oai-ran/v3-flexible && \
     chmod +x patch_srs_ul_v3.sh apply_csi_v3_cmake.sh && \
     bash patch_srs_ul_v3.sh && \
     bash apply_csi_v3_cmake.sh && \
