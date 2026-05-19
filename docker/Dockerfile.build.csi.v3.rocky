@@ -28,22 +28,20 @@ RUN rm -Rf /oai-ran
 WORKDIR /oai-ran
 COPY . .
 
-# Copy CSI v3 patches and integration
+# Copy CSI v3 patches and integration (same as v2, just apply patches to existing files)
 COPY v3-flexible/patch_srs_ul_v3.sh .
-COPY v3-flexible/apply_csi_v3_cmake.sh .
 COPY v3-flexible .
 
-# Apply CSI v3 patches
-RUN export OAI_DIR=/oai-ran CSI_V3_DIR=/oai-ran/v3-flexible && \
-    chmod +x patch_srs_ul_v3.sh apply_csi_v3_cmake.sh && \
+# Apply CSI v3 patches (NO CMAKE patching, just file patches like v2)
+RUN export OAI_DIR=/oai-ran && \
+    chmod +x patch_srs_ul_v3.sh && \
     bash patch_srs_ul_v3.sh && \
-    bash apply_csi_v3_cmake.sh && \
     echo "✅ CSI v3 patches applied"
 
 # Verify patches
 RUN grep "nr_srs_csi_logging_invoke_v3" /oai-ran/openair1/SCHED_NR/phy_procedures_nr_gNB.c || (echo "❌ PATCH FAILED" && exit 1)
 
-# Build OAI
+# Build OAI (standard build, no CMake changes needed)
 RUN dnf install -y dnf-plugins-core && \
     dnf config-manager --set-enabled crb && \
     dnf install -y gcc-toolset-13 gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils && \
