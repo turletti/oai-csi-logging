@@ -28,7 +28,9 @@ RUN rm -Rf /oai-ran
 WORKDIR /oai-ran
 COPY . .
 
-# Copy ONLY the patch script (NOT v3-flexible directory!)
+# Copy CSI v3 source files and patches
+COPY v3-flexible/csi_integration_v3.c openair1/PHY/NR_ESTIMATION/
+COPY v3-flexible/csi_integration_v3.c openair1/PHY/NR_UE_TRANSPORT/
 COPY v3-flexible/patch_srs_ul_v3.sh .
 
 # Apply CSI v3 patches
@@ -40,7 +42,16 @@ RUN export OAI_DIR=/oai-ran && \
 # Verify patches
 RUN grep "nr_srs_csi_logging_invoke_v3" /oai-ran/openair1/SCHED_NR/phy_procedures_nr_gNB.c || (echo "❌ PATCH FAILED" && exit 1)
 
-# Build OAI (standard build, no CMAKE interference)
+# Update CMakeLists.txt to include csi_integration_v3.c
+RUN awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/ && !done_ul {print; print "  ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_integration_v3.c"; done_ul=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
+    awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/ && !done_ue {print; print "  ${OPENAIR1_DIR}/PHY/NR_UE_TRANSPORT/csi_integration_v3.c"; done_ue=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
+    echo "✅ CMakeLists.txt updated for CSI v3"
+
+# Link libcsi_logging_v3.a
+RUN echo 'target_link_libraries(nr-softmodem PRIVATE /usr/local/lib/libcsi_logging_v3.a)' >> cmake_targets/ran_build/CMakeLists.txt && \
+    echo "✅ Added libcsi_logging_v3.a link"
+
+# Build OAI
 RUN dnf install -y dnf-plugins-core && \
     dnf config-manager --set-enabled crb && \
     dnf install -y gcc-toolset-13 gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils && \
