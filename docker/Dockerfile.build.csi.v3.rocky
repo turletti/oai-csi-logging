@@ -1,6 +1,7 @@
 #
 # Dockerfile for OAI BUILD with CSI v3 LOGGING
 #   Valid for Rocky 9
+# FOLLOWS v2 PATTERN EXACTLY - only filenames changed
 #
 
 FROM ran-base:latest AS csi-v3-builder
@@ -28,16 +29,12 @@ RUN rm -Rf /oai-ran
 WORKDIR /oai-ran
 COPY . .
 
-# Copy csi_integration_v3.c to both required locations (same pattern as v2)
+# Copy csi_integration_v3.c to both required locations (EXACT v2 pattern)
 RUN cp v3-flexible/src/csi_integration_v3.c openair1/PHY/NR_ESTIMATION/ && \
     cp v3-flexible/src/csi_integration_v3.c openair1/PHY/NR_UE_TRANSPORT/ && \
     echo "✅ csi_integration_v3.c copied"
 
-# Copy all CSI v3 source files
-COPY v3-flexible/src/*.c ./
-COPY v3-flexible/include/*.h /usr/local/include/
-
-# Apply CSI v3 patches (same pattern as v2, just different script names)
+# Apply CSI v3 patches (EXACT v2 pattern, just different script names)
 RUN export OAI_DIR=/oai-ran && \
     chmod +x patch_srs_ul_v3.sh && \
     bash patch_srs_ul_v3.sh && \
@@ -46,10 +43,14 @@ RUN export OAI_DIR=/oai-ran && \
 # Verify patches were applied
 RUN grep "nr_srs_csi_logging_invoke_v3" /oai-ran/openair1/SCHED_NR/phy_procedures_nr_gNB.c || (echo "❌ PATCH FAILED" && exit 1)
 
-# Update CMakeLists.txt (same pattern as v2)
+# Update CMakeLists.txt (EXACT v2 pattern, just different filenames)
 RUN awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/ && !done_ul {print; print "  ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_integration_v3.c"; done_ul=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
     awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/ && !done_ue {print; print "  ${OPENAIR1_DIR}/PHY/NR_UE_TRANSPORT/csi_integration_v3.c"; done_ue=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
     echo "✅ CMakeLists.txt updated for CSI v3"
+
+# Link libcsi_logging_v3.a in cmake_targets CMakeLists
+RUN sed -i '/target_link_libraries(nr-softmodem PRIVATE/s/$/\n  \/usr\/local\/lib\/libcsi_logging_v3.a/' cmake_targets/ran_build/CMakeLists.txt && \
+    echo "✅ Linked libcsi_logging_v3.a to nr-softmodem"
 
 # Build OAI
 RUN dnf install -y dnf-plugins-core && \
