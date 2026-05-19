@@ -3,7 +3,7 @@
 
 set -e
 
-OAI_CMAKE=${1:-/opt/oai-ran/CMakeLists.txt}
+OAI_CMAKE=${OAI_DIR:-/oai-ran}/CMakeLists.txt
 CSI_V3_DIR=${CSI_V3_DIR:-/home/gitlab-runner/oai-csi-logging/v3-flexible}
 
 if [ ! -f "$OAI_CMAKE" ]; then
