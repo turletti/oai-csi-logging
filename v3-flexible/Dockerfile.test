@@ -1,0 +1,32 @@
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y \
+  build-essential \
+  cmake \
+  git \
+  libjson-c-dev \
+  pkg-config \
+  && rm -rf /var/lib/apt/lists/*
+
+# Clone OAI (minimal)
+WORKDIR /opt
+RUN git clone --depth 1 https://gitlab.eurecom.fr/oai/openairinterface5g.git oai-ran
+
+# Copy CSI v3
+COPY v3-flexible /home/csi-logging-v3
+
+WORKDIR /opt/oai-ran
+
+# Apply patches
+RUN bash /home/csi-logging-v3/patch_srs_ul_v3.sh
+
+# Apply CMake integration
+RUN bash /home/csi-logging-v3/apply_csi_v3_cmake.sh
+
+# Build CSI v3 library only (quick test)
+RUN mkdir -p /home/csi-logging-v3/build && \
+  cd /home/csi-logging-v3/build && \
+  cmake .. && \
+  make -j$(nproc)
+
+RUN echo "✅ CSI v3 library compiled successfully"
