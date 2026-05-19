@@ -4,7 +4,7 @@
 #
 
 FROM ran-base:latest AS csi-v3-builder
-RUN dnf install -y libjson-c-devel pkg-config && dnf clean all
+RUN dnf install -y json-c-devel pkg-config && dnf clean all
 
 WORKDIR /tmp/csi-v3
 COPY v3-flexible .
