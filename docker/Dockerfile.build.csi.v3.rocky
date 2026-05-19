@@ -4,6 +4,7 @@
 #
 
 FROM ran-base:latest AS csi-v3-builder
+RUN dnf install -y libjson-c-devel pkg-config && dnf clean all
 
 WORKDIR /tmp/csi-v3
 COPY v3-flexible .
@@ -14,7 +15,7 @@ RUN mkdir -p build && cd build && \
     echo "✅ libcsi_logging_v3.a built and installed"
 
 # STAGE 2: Build OAI with CSI v3 integration
-FROM ran-base:latest AS ran-build-csi-v3
+FROM ran-base:latest AS ran-build-csi
 ARG E2AP_VERSION=E2AP_V3
 ARG KPM_VERSION=KPM_V3_00
 
