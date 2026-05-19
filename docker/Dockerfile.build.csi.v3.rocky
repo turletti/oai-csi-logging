@@ -1,0 +1,70 @@
+#
+# Dockerfile for OAI BUILD with CSI v3 LOGGING
+#   Valid for Rocky 9
+#
+
+FROM ran-base:latest AS csi-v3-builder
+
+WORKDIR /tmp/csi-v3
+COPY v3-flexible .
+
+RUN mkdir -p build && cd build && \
+    source /opt/rh/gcc-toolset-13/enable && \
+    cmake .. && make && make install && ldconfig && \
+    echo "✅ libcsi_logging_v3.a built and installed"
+
+# STAGE 2: Build OAI with CSI v3 integration
+FROM ran-base:latest AS ran-build-csi-v3
+ARG E2AP_VERSION=E2AP_V3
+ARG KPM_VERSION=KPM_V3_00
+
+# Copy libcsi_logging_v3 from stage 1
+COPY --from=csi-v3-builder /usr/local/lib/libcsi_logging_v3.a /usr/local/lib/
+COPY --from=csi-v3-builder /usr/local/include/csi_rb_logging_v3.h /usr/local/include/
+
+# Copy OAI source
+RUN rm -Rf /oai-ran
+WORKDIR /oai-ran
+COPY . .
+
+# Copy CSI v3 patches and integration
+COPY v3-flexible/patch_srs_ul_v3.sh .
+COPY v3-flexible/apply_csi_v3_cmake.sh .
+COPY v3-flexible .
+
+# Apply CSI v3 patches
+RUN export OAI_DIR=/oai-ran && \
+    chmod +x patch_srs_ul_v3.sh apply_csi_v3_cmake.sh && \
+    bash patch_srs_ul_v3.sh && \
+    bash apply_csi_v3_cmake.sh && \
+    echo "✅ CSI v3 patches applied"
+
+# Verify patches
+RUN grep "nr_srs_csi_logging_invoke_v3" /oai-ran/openair1/SCHED_NR/phy_procedures_nr_gNB.c || (echo "❌ PATCH FAILED" && exit 1)
+
+# Build OAI
+RUN dnf install -y dnf-plugins-core && \
+    dnf config-manager --set-enabled crb && \
+    dnf install -y gcc-toolset-13 gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils && \
+    /bin/sh oaienv && \
+    cd cmake_targets && \
+    mkdir -p log && \
+    source /opt/rh/gcc-toolset-13/enable && \
+    CXXFLAGS='-Werror=format -fstack-protector-strong' \
+    CFLAGS='-Werror=format -fstack-protector-strong' \
+    ./build_oai -c --ninja --eNB --gNB --RU --UE --nrUE --build-e2 \
+      --cmake-opt -DE2AP_VERSION=$E2AP_VERSION \
+      --cmake-opt -DKPM_VERSION=$KPM_VERSION \
+      --cmake-opt '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,noexecstack' \
+      --cmake-opt '-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,noexecstack' \
+      --build-lib 'telnetsrv enbscope uescope nrscope' \
+      --build-tool-opt -k10 -w USRP -t Ethernet --noavx512 && \
+    echo "✅ OAI build SUCCESSFUL"
+
+# Build FlexRIC
+RUN mkdir -p openair2/E2AP/flexric/build && \
+    cd openair2/E2AP/flexric/build && \
+    source /opt/rh/gcc-toolset-13/enable && \
+    cmake -GNinja -DCMAKE_BUILD_TYPE=Release -DKPM_VERSION=$KPM_VERSION -DE2AP_VERSION=$E2AP_VERSION .. && \
+    ninja && ninja install && \
+    echo "✅ FlexRIC SUCCESSFUL"

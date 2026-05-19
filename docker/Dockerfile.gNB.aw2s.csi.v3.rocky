@@ -1,0 +1,85 @@
+#
+# Dockerfile for OAI gNB with AW2S and CSI v3
+#   Valid for Rocky 9
+#
+
+ARG BASE_IMAGE=docker.io/rockylinux:9
+FROM ran-base:latest AS gnb-base
+FROM ran-build-csi-v3:latest AS gnb-build
+
+COPY ./libori.so /usr/local/lib
+
+# build AW2S fronthaul lib with CSI v3 support
+WORKDIR /oai-ran
+RUN /bin/sh oaienv && \
+    cd cmake_targets/ && \
+    ./build_oai -w AW2SORI -t Ethernet
+
+FROM $BASE_IMAGE AS oai-gnb-aw2s-csi-v3
+
+ENV TZ=Europe/Paris
+
+RUN dnf update -y && \
+    dnf install -y dnf-plugins-core && \
+    dnf config-manager --set-enabled crb && \
+    dnf install -y epel-release && \
+    dnf install -y \
+        procps-ng \
+        libXpm \
+        libX11 \
+        gdb \
+        lksctp-tools \
+        tzdata \
+        net-tools \
+        iputils \
+        iproute \
+        yaml-cpp-devel && \
+    echo "/usr/local/lib" > /etc/ld.so.conf.d/local-lib.conf && \
+    echo "/usr/local/lib64" >> /etc/ld.so.conf.d/local-lib.conf
+
+COPY ./libori.so /usr/local/lib
+
+WORKDIR /opt/oai-gnb-aw2s/bin
+COPY --from=gnb-build /oai-ran/cmake_targets/ran_build/build/nr-softmodem ./
+COPY ./docker/scripts/gnb-aw2s_entrypoint.sh /opt/oai-gnb-aw2s/bin/entrypoint.sh
+
+COPY --from=gnb-build \
+    /oai-ran/cmake_targets/ran_build/build/liboai_eth_transpro.so \
+    /oai-ran/cmake_targets/ran_build/build/librfsimulator.so \
+    /oai-ran/cmake_targets/ran_build/build/libaw2sori_transpro.so \
+    /oai-ran/cmake_targets/ran_build/build/libcoding.so \
+    /oai-ran/cmake_targets/ran_build/build/libparams_libconfig.so \
+    /oai-ran/cmake_targets/ran_build/build/libdfts.so \
+    /oai-ran/cmake_targets/ran_build/build/libldpc*.so \
+    /oai-ran/cmake_targets/ran_build/build/libtelnetsrv.so \
+    /oai-ran/cmake_targets/ran_build/build/libparams_yaml.so \
+    /usr/local/lib/
+
+# Copy CSI v3 library
+COPY --from=gnb-build /usr/local/lib/libcsi_logging_v3.a /usr/local/lib/
+COPY --from=gnb-build /usr/local/include/csi_rb_logging_v3.h /usr/local/include/
+
+COPY --from=gnb-base \
+    /lib64/libconfig.so.11 \
+    /lib64/libforms.so.2 \
+    /lib64/
+
+COPY --from=gnb-build /usr/local/lib64/flexric /usr/local/lib/flexric
+
+RUN ln -s /usr/local/lib/libaw2sori_transpro.so /usr/local/lib/libthirdparty_transpro.so && \
+    ln -s /usr/local/lib/liboai_eth_transpro.so /usr/local/lib/liboai_transpro.so && \
+    ldconfig && \
+    echo "---- CSI v3 Library Check ----" && \
+    ls -la /usr/local/lib/libcsi_logging_v3.a && \
+    echo "✅ CSI v3 library present"
+
+WORKDIR /opt/oai-gnb-aw2s
+
+# Create CSI output directory
+RUN mkdir -p /data/csi && chmod 777 /data/csi
+
+COPY --from=gnb-base /usr/local/bin/yq /usr/local/bin/yq
+COPY --from=gnb-base /tini /tini
+
+ENTRYPOINT ["/tini", "-v", "--", "/opt/oai-gnb-aw2s/bin/entrypoint.sh"]
+CMD ["/opt/oai-gnb-aw2s/bin/nr-softmodem"]
