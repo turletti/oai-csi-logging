@@ -63,6 +63,10 @@ void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx,
                                    uint16_t bwp_start,
                                    uint16_t bwp_size,
                                    const c16_t srs_estimated_channel_freq[][N_ap][ofdm_symbol_size * N_symb_SRS]) {
+  static unsigned int call_count = 0;
+  if (++call_count % 100 == 0 && g_csi_initialized) {
+    csi_ring_buffer_flush_v3(&g_csi_rb);
+  }
   static int g_csi_lazy_init_done = 0;
   if (!g_csi_lazy_init_done && g_csi_enabled) {
     const char *config_str = getenv("CSI_CONFIG") ?: "";
