@@ -3,8 +3,8 @@
 #   Valid for Rocky 9
 #
 
-# STAGE 1: Build libcsi_logging_v3 library FROM LOCAL v3-flexible
-FROM ran-base:latest AS csi-builder
+# STAGE 1: Build libcsi_logging_v3 library
+FROM ran-base:latest AS csi-v3-builder
 RUN dnf install -y json-c-devel pkg-config && dnf clean all
 
 WORKDIR /tmp/csi-v3
@@ -21,8 +21,8 @@ ARG E2AP_VERSION=E2AP_V3
 ARG KPM_VERSION=KPM_V3_00
 
 # Copy libcsi_logging_v3 from stage 1
-COPY --from=csi-builder /usr/local/lib/libcsi_logging_v3.a /usr/local/lib/
-COPY --from=csi-builder /usr/local/include/csi_rb_logging_v3.h /usr/local/include/
+COPY --from=csi-v3-builder /usr/local/lib/libcsi_logging_v3.a /usr/local/lib/
+COPY --from=csi-v3-builder /usr/local/include/csi_rb_logging_v3.h /usr/local/include/
 
 # Copy OAI source
 RUN rm -Rf /oai-ran
@@ -36,8 +36,8 @@ RUN cp v3-flexible/src/csi_integration_v3.c openair1/PHY/NR_ESTIMATION/ && \
 
 # Apply CSI v3 patches
 RUN export OAI_DIR=/oai-ran && \
-    chmod +x v3-flexible/patch_srs_ul_v3.sh && \
-    bash v3-flexible/patch_srs_ul_v3.sh && \
+    chmod +x patch_srs_ul_v3.sh && \
+    bash patch_srs_ul_v3.sh && \
     echo "✅ CSI v3 patches applied"
 
 # Verify patches were applied
@@ -47,10 +47,6 @@ RUN grep "nr_srs_csi_logging_invoke_v3" /oai-ran/openair1/SCHED_NR/phy_procedure
 RUN awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/ && !done_ul {print; print "  ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_integration_v3.c"; done_ul=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
     awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/ && !done_ue {print; print "  ${OPENAIR1_DIR}/PHY/NR_UE_TRANSPORT/csi_integration_v3.c"; done_ue=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
     echo "✅ CMakeLists.txt updated for CSI v3"
-
-# Link libcsi_logging_v3.a
-RUN echo 'target_link_libraries(nr-softmodem PRIVATE /usr/local/lib/libcsi_logging_v3.a)' >> cmake_targets/ran_build/CMakeLists.txt && \
-    echo "✅ Linked libcsi_logging_v3.a to nr-softmodem"
 
 # Build OAI
 RUN dnf install -y dnf-plugins-core && \
@@ -62,6 +58,7 @@ RUN dnf install -y dnf-plugins-core && \
     source /opt/rh/gcc-toolset-13/enable && \
     CXXFLAGS='-Werror=format -fstack-protector-strong' \
     CFLAGS='-Werror=format -fstack-protector-strong' \
+    LDFLAGS='-L/usr/local/lib' \
     ./build_oai -c --ninja --eNB --gNB --RU --UE --nrUE --build-e2 \
       --cmake-opt -DE2AP_VERSION=$E2AP_VERSION \
       --cmake-opt -DKPM_VERSION=$KPM_VERSION \
