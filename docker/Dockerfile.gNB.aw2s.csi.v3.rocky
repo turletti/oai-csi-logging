@@ -15,7 +15,7 @@ RUN /bin/sh oaienv && \
     cd cmake_targets/ && \
     ./build_oai -w AW2SORI -t Ethernet
 
-FROM $BASE_IMAGE AS oai-gnb-aw2s-csi-v3
+FROM $BASE_IMAGE AS oai-gnb-aw2s-csi
 
 ENV TZ=Europe/Paris
 
