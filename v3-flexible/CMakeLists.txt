@@ -31,7 +31,12 @@ set(CSI_V3_SOURCES
 add_library(csi_logging_v3 STATIC ${CSI_V3_SOURCES})
 
 if(JSON_C_FOUND)
-  target_link_libraries(csi_logging_v3 ${JSON_C_LIBRARIES})
+  # Export json-c as interface dependency (consumers must link it)
+  # Do not link into the static library itself (V2-compatible approach)
+  set_target_properties(csi_logging_v3 PROPERTIES
+    INTERFACE_LINK_LIBRARIES "${JSON_C_LIBRARIES}"
+  )
+  target_include_directories(csi_logging_v3 PUBLIC ${JSON_C_INCLUDE_DIRS})
 endif()
 
 # Export for use in OAI
