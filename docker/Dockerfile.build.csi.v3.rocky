@@ -53,24 +53,19 @@ COPY . .
 # STEP 1: Copy CSI v3 support files (V2 methodology - all sources together)
 # ============================================================================
 # Create dedicated CSI v3 directory in OAI (inspired by V2 patch-scripts)
-RUN mkdir -p openair1/PHY/NR_ESTIMATION/csi_v3_support
-
-# Copy ALL CSI v3 C sources
-RUN cp v3-flexible/src/csi_integration_v3.c \
-       openair1/PHY/NR_ESTIMATION/csi_v3_support/ && \
-    cp v3-flexible/src/csi_logging_callback_v3.c \
-       openair1/PHY/NR_ESTIMATION/csi_v3_support/ && \
-    cp v3-flexible/src/csi_config_parser.c \
-       openair1/PHY/NR_ESTIMATION/csi_v3_support/ && \
-    cp v3-flexible/include/csi_rb_logging_v3.h \
-       openair1/PHY/NR_ESTIMATION/csi_v3_support/ && \
+RUN mkdir -p openair1/PHY/NR_ESTIMATION/csi_v3_support && \
+    cp v3-flexible/src/csi_integration_v3.c openair1/PHY/NR_ESTIMATION/csi_v3_support/ && \
+    cp v3-flexible/src/csi_logging_callback_v3.c openair1/PHY/NR_ESTIMATION/csi_v3_support/ && \
+    cp v3-flexible/src/csi_config_parser.c openair1/PHY/NR_ESTIMATION/csi_v3_support/ && \
+    cp v3-flexible/include/csi_rb_logging_v3.h openair1/PHY/NR_ESTIMATION/csi_v3_support/ && \
     echo "✅ CSI v3 sources copied to csi_v3_support/"
 
 # Verify all files copied
-RUN test -f openair1/PHY/NR_ESTIMATION/csi_v3_support/csi_integration_v3.c || exit 1
-RUN test -f openair1/PHY/NR_ESTIMATION/csi_v3_support/csi_logging_callback_v3.c || exit 1
-RUN test -f openair1/PHY/NR_ESTIMATION/csi_v3_support/csi_config_parser.c || exit 1
-RUN test -f openair1/PHY/NR_ESTIMATION/csi_v3_support/csi_rb_logging_v3.h || exit 1
+RUN test -f openair1/PHY/NR_ESTIMATION/csi_v3_support/csi_integration_v3.c && \
+    test -f openair1/PHY/NR_ESTIMATION/csi_v3_support/csi_logging_callback_v3.c && \
+    test -f openair1/PHY/NR_ESTIMATION/csi_v3_support/csi_config_parser.c && \
+    test -f openair1/PHY/NR_ESTIMATION/csi_v3_support/csi_rb_logging_v3.h || \
+    (echo "❌ CSI v3 source files not copied" && exit 1)
 
 # ============================================================================
 # STEP 2: Apply CSI v3 patches (V2 methodology - textual anchors + verify)
@@ -78,36 +73,25 @@ RUN test -f openair1/PHY/NR_ESTIMATION/csi_v3_support/csi_rb_logging_v3.h || exi
 RUN export OAI_DIR=/oai-ran && \
     chmod +x patch_srs_ul_v3.sh && \
     bash patch_srs_ul_v3.sh && \
-    echo "✅ CSI v3 patches applied"
-
-# Verify patch was applied (V2 methodology - mandatory check)
-RUN grep -q "nr_srs_csi_logging_invoke_v3" \
-    /oai-ran/openair1/SCHED_NR/phy_procedures_nr_gNB.c || \
-    (echo "❌ PATCH VERIFICATION FAILED: nr_srs_csi_logging_invoke_v3 not found" && exit 1)
-
-echo "✅ Patch verification PASSED"
+    grep -q "nr_srs_csi_logging_invoke_v3" /oai-ran/openair1/SCHED_NR/phy_procedures_nr_gNB.c || \
+    (echo "❌ PATCH VERIFICATION FAILED: nr_srs_csi_logging_invoke_v3 not found" && exit 1) && \
+    echo "✅ CSI v3 patches applied and verified"
 
 # ============================================================================
 # STEP 3: Update CMakeLists.txt (V2 methodology - textual anchors + verify)
 # ============================================================================
-# Use sed (not awk) to add CSI v3 sources to CMakeLists.txt
+# Use sed to add CSI v3 sources to CMakeLists.txt
 # Find the line with nr_ul_channel_estimation.c and add our sources after it
 RUN sed -i '/\${OPENAIR1_DIR}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/a\
   ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_integration_v3.c\
   ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_logging_callback_v3.c\
   ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_config_parser.c' \
     CMakeLists.txt && \
-    echo "✅ CSI v3 sources added to CMakeLists.txt"
-
-# Verify CMakeLists.txt was updated (V2 methodology - mandatory check)
-RUN grep -q "csi_integration_v3.c" CMakeLists.txt || \
-    (echo "❌ CMakeLists.txt UPDATE FAILED: csi_integration_v3.c not found" && exit 1)
-RUN grep -q "csi_logging_callback_v3.c" CMakeLists.txt || \
-    (echo "❌ CMakeLists.txt UPDATE FAILED: csi_logging_callback_v3.c not found" && exit 1)
-RUN grep -q "csi_config_parser.c" CMakeLists.txt || \
-    (echo "❌ CMakeLists.txt UPDATE FAILED: csi_config_parser.c not found" && exit 1)
-
-echo "✅ CMakeLists.txt verification PASSED"
+    grep -q "csi_integration_v3.c" CMakeLists.txt && \
+    grep -q "csi_logging_callback_v3.c" CMakeLists.txt && \
+    grep -q "csi_config_parser.c" CMakeLists.txt || \
+    (echo "❌ CMakeLists.txt UPDATE FAILED: CSI v3 sources not found in CMakeLists.txt" && exit 1) && \
+    echo "✅ CSI v3 sources added to CMakeLists.txt and verified"
 
 # ============================================================================
 # STEP 4: Add explicit CSI v3 linking configuration (V2 methodology)
@@ -125,6 +109,9 @@ if(JSON_C_FOUND)
   include_directories(${JSON_C_INCLUDE_DIRS})
   # Link json-c to nr-softmodem
   set_property(TARGET nr-softmodem APPEND_STRING PROPERTY LINK_FLAGS " ${JSON_C_LDFLAGS}")
+  message(STATUS "✅ json-c library found and linked")
+else()
+  message(FATAL_ERROR "❌ json-c library not found!")
 endif()
 
 # Link CSI v3 prebuilt library
@@ -138,13 +125,10 @@ endif()
 # ======================================================
 CMAKELISTS_CSI
 
-echo "✅ CSI v3 linking configuration added to CMakeLists.txt"
-
-# Verify final CMakeLists.txt
+# Verify CMakeLists.txt was updated
 RUN grep -q "CSI v3 LOGGING INTEGRATION" CMakeLists.txt || \
-    (echo "❌ CSI v3 linking config not found in CMakeLists.txt" && exit 1)
-
-echo "✅ CMakeLists.txt final verification PASSED"
+    (echo "❌ CSI v3 linking config not appended to CMakeLists.txt" && exit 1) && \
+    echo "✅ CSI v3 linking configuration added and verified"
 
 # ============================================================================
 # STEP 5: Build OAI with CSI v3 support
@@ -169,9 +153,8 @@ RUN dnf install -y dnf-plugins-core && \
 
 # Verify nr-softmodem was built
 RUN test -f /oai-ran/cmake_targets/ran_build/build/nr-softmodem || \
-    (echo "❌ nr-softmodem binary not found!" && exit 1)
-
-echo "✅ nr-softmodem binary verification PASSED"
+    (echo "❌ nr-softmodem binary not found!" && exit 1) && \
+    echo "✅ nr-softmodem binary verified"
 
 # ============================================================================
 # STEP 6: Build FlexRIC
