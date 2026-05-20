@@ -5,7 +5,9 @@
 
 # STAGE 1: Build libcsi_logging_v3 library
 FROM ran-base:latest AS csi-v3-builder
-RUN dnf install -y json-c-devel pkg-config && dnf clean all
+RUN dnf install -y dnf-plugins-core && \
+    dnf config-manager --set-enabled crb && \
+    dnf install -y json-c-devel pkg-config && dnf clean all
 
 WORKDIR /tmp/csi-v3
 COPY v3-flexible .
