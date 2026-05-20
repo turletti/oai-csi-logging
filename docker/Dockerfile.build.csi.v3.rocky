@@ -73,7 +73,7 @@ RUN test -f openair1/PHY/NR_ESTIMATION/csi_v3_support/csi_integration_v3.c && \
 RUN export OAI_DIR=/oai-ran && \
     chmod +x patch_srs_ul_v3.sh && \
     bash patch_srs_ul_v3.sh && \
-    bash patch_csi_init_main_v3.sh \
+    bash patch_csi_init_main_v3.sh && \
     grep -q "nr_srs_csi_logging_invoke_v3" /oai-ran/openair1/SCHED_NR/phy_procedures_nr_gNB.c || \
     (echo "❌ PATCH VERIFICATION FAILED: nr_srs_csi_logging_invoke_v3 not found" && exit 1) && \
     echo "✅ CSI v3 patches applied and verified"
