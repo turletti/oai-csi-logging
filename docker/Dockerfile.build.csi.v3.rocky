@@ -1,7 +1,12 @@
+#
+# Dockerfile for the Open-Air-Interface BUILD service with CSI v3 LOGGING
+#   Valid for Rocky 9
+#
+
 # STAGE 1: Build libcsi_logging_v3 library
 FROM ran-base:latest AS csi-builder
 RUN cd /tmp && \
-    git clone https://github.com/turletti/oai-csi-logging.git -b main && \
+    git clone https://github.com/turletti/oai-csi-logging.git && \
     cd oai-csi-logging && \
     mkdir -p build && cd build && \
     source /opt/rh/gcc-toolset-13/enable && \
@@ -27,7 +32,7 @@ RUN cp csi_integration_v3.c openair1/PHY/NR_ESTIMATION/ && \
     cp csi_integration_v3.c openair1/PHY/NR_UE_TRANSPORT/ && \
     echo "✅ csi_integration_v3.c copied"
 
-# Apply CSI v3 patches
+# Apply CSI v3 patches (ONLY patch_srs_ul_v3.sh for v3)
 RUN export OAI_DIR=/oai-ran && \
     chmod +x patch_srs_ul_v3.sh && \
     bash patch_srs_ul_v3.sh && \
