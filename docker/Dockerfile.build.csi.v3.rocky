@@ -1,37 +1,27 @@
 #
 # Dockerfile for OAI BUILD with CSI v3 LOGGING
 #   Valid for Rocky 9
+# FOLLOW V2 PATTERN: compile CSI sources WITH OAI, not as separate lib
 #
 
-FROM ran-base:latest AS csi-v3-builder
-RUN dnf install -y json-c-devel pkg-config && dnf clean all
-
-WORKDIR /tmp/csi-v3
-COPY v3-flexible .
-
-RUN mkdir -p build && cd build && \
-    source /opt/rh/gcc-toolset-13/enable && \
-    cmake .. && make && make install && ldconfig && \
-    echo "✅ libcsi_logging_v3.a built and installed"
-
-# STAGE 2: Build OAI with CSI v3 integration
 FROM ran-base:latest AS ran-build-csi
 ARG E2AP_VERSION=E2AP_V3
 ARG KPM_VERSION=KPM_V3_00
-
-# Copy libcsi_logging_v3 from stage 1
-COPY --from=csi-v3-builder /usr/local/lib/libcsi_logging_v3.a /usr/local/lib/
-COPY --from=csi-v3-builder /usr/local/include/csi_rb_logging_v3.h /usr/local/include/
 
 # Copy OAI source
 RUN rm -Rf /oai-ran
 WORKDIR /oai-ran
 COPY . .
 
-# Copy csi_integration_v3.c to both required locations
+# Copy csi_integration_v3.c to both required locations (v2 pattern)
 RUN cp v3-flexible/src/csi_integration_v3.c openair1/PHY/NR_ESTIMATION/ && \
     cp v3-flexible/src/csi_integration_v3.c openair1/PHY/NR_UE_TRANSPORT/ && \
     echo "✅ csi_integration_v3.c copied"
+
+# Copy all CSI v3 sources for compilation with OAI
+RUN cp v3-flexible/src/*.c . && \
+    cp -r v3-flexible/include/* /usr/local/include/ && \
+    echo "✅ CSI v3 sources copied"
 
 # Apply CSI v3 patches
 RUN export OAI_DIR=/oai-ran && \
@@ -42,12 +32,22 @@ RUN export OAI_DIR=/oai-ran && \
 # Verify patches
 RUN grep "nr_srs_csi_logging_invoke_v3" /oai-ran/openair1/SCHED_NR/phy_procedures_nr_gNB.c || (echo "❌ PATCH FAILED" && exit 1)
 
-# Update CMakeLists.txt to include csi_integration_v3.c sources
+# Update CMakeLists.txt to include csi_integration_v3.c and CSI v3 source files
 RUN awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/ && !done_ul {print; print "  ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_integration_v3.c"; done_ul=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
     awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/ && !done_ue {print; print "  ${OPENAIR1_DIR}/PHY/NR_UE_TRANSPORT/csi_integration_v3.c"; done_ue=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
     echo "✅ CMakeLists.txt updated for CSI v3"
 
-# Build OAI with CSI v3 library linked
+# Add CSI v3 sources to root CMakeLists.txt for compilation
+RUN echo "" >> CMakeLists.txt && \
+    echo "# CSI v3 sources" >> CMakeLists.txt && \
+    echo "add_library(CSI_V3_LIB" >> CMakeLists.txt && \
+    echo "  csi_config_parser.c" >> CMakeLists.txt && \
+    echo "  csi_logging_callback_v3.c" >> CMakeLists.txt && \
+    echo ")" >> CMakeLists.txt && \
+    echo "target_link_libraries(nr-softmodem PRIVATE CSI_V3_LIB)" >> CMakeLists.txt && \
+    echo "✅ Added CSI v3 lib to CMakeLists.txt"
+
+# Build OAI (EXACTLY like v2, no special flags)
 RUN dnf install -y dnf-plugins-core && \
     dnf config-manager --set-enabled crb && \
     dnf install -y gcc-toolset-13 gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils && \
@@ -57,12 +57,11 @@ RUN dnf install -y dnf-plugins-core && \
     source /opt/rh/gcc-toolset-13/enable && \
     CXXFLAGS='-Werror=format -fstack-protector-strong' \
     CFLAGS='-Werror=format -fstack-protector-strong' \
-    LDFLAGS='-L/usr/local/lib' \
     ./build_oai -c --ninja --eNB --gNB --RU --UE --nrUE --build-e2 \
       --cmake-opt -DE2AP_VERSION=$E2AP_VERSION \
       --cmake-opt -DKPM_VERSION=$KPM_VERSION \
-      --cmake-opt '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,noexecstack -L/usr/local/lib' \
-      --cmake-opt '-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,noexecstack -L/usr/local/lib -lcsi_logging_v3' \
+      --cmake-opt '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,noexecstack' \
+      --cmake-opt '-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,noexecstack' \
       --build-lib 'telnetsrv enbscope uescope nrscope' \
       --build-tool-opt -k10 -w USRP -t Ethernet --noavx512 && \
     echo "✅ OAI build SUCCESSFUL"
