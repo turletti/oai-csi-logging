@@ -48,6 +48,10 @@ RUN awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/ &
     awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/ && !done_ue {print; print "  ${OPENAIR1_DIR}/PHY/NR_UE_TRANSPORT/csi_integration_v3.c"; done_ue=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
     echo "✅ CMakeLists.txt updated for CSI v3"
 
+# Link libcsi_logging_v3.a
+RUN echo 'target_link_libraries(nr-softmodem PRIVATE /usr/local/lib/libcsi_logging_v3.a)' >> cmake_targets/ran_build/CMakeLists.txt && \
+    echo "✅ Linked libcsi_logging_v3.a to nr-softmodem"
+
 # Build OAI
 RUN dnf install -y dnf-plugins-core && \
     dnf config-manager --set-enabled crb && \
