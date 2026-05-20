@@ -1,11 +1,11 @@
 #
 # Dockerfile for the Open-Air-Interface BUILD service with CSI v3 LOGGING
 #   Valid for Rocky 9
-#   Methodology: Inspired from V2 (proven to work)
-#   - Minimize OAI modifications
-#   - Use patch scripts (sed/awk) with verification
-#   - Explicit linking
+#   Methodology: IDENTICAL to V2 (IMPORTED library approach)
+#   - Uses proper CMake IMPORTED target (no syntax conflicts)
+#   - foreach + if(TARGET) pattern for linking
 #   - All sources copied together (no split)
+#   - Verified working in V2, applied to V3
 
 # STAGE 1: Build libcsi_logging_v3 library (self-contained)
 FROM ran-base:latest AS csi-v3-builder
@@ -26,13 +26,13 @@ RUN test -f /usr/local/lib/libcsi_logging_v3.a || (echo "❌ libcsi_logging_v3.a
 RUN test -f /usr/local/include/csi_rb_logging_v3.h || (echo "❌ csi_rb_logging_v3.h not found" && exit 1)
 
 # ============================================================================
-# STAGE 2: Build OAI with CSI v3 integration (V2-inspired methodology)
+# STAGE 2: Build OAI with CSI v3 integration (V2-IDENTICAL methodology)
 # ============================================================================
 FROM ran-base:latest AS ran-build-csi
 ARG E2AP_VERSION=E2AP_V3
 ARG KPM_VERSION=KPM_V3_00
 
-# Install build dependencies (including json-c-devel for link-time)
+# Install build dependencies (including json-c-devel)
 RUN dnf install -y dnf-plugins-core && \
     dnf config-manager --set-enabled crb && \
     dnf install -y json-c-devel pkg-config && dnf clean all
@@ -52,7 +52,7 @@ COPY . .
 # ============================================================================
 # STEP 1: Copy CSI v3 support files (V2 methodology - all sources together)
 # ============================================================================
-# Create dedicated CSI v3 directory in OAI (inspired by V2 patch-scripts)
+# Create dedicated CSI v3 directory in OAI
 RUN mkdir -p openair1/PHY/NR_ESTIMATION/csi_v3_support && \
     cp v3-flexible/src/csi_integration_v3.c openair1/PHY/NR_ESTIMATION/csi_v3_support/ && \
     cp v3-flexible/src/csi_logging_callback_v3.c openair1/PHY/NR_ESTIMATION/csi_v3_support/ && \
@@ -68,7 +68,7 @@ RUN test -f openair1/PHY/NR_ESTIMATION/csi_v3_support/csi_integration_v3.c && \
     (echo "❌ CSI v3 source files not copied" && exit 1)
 
 # ============================================================================
-# STEP 2: Apply CSI v3 patches (V2 methodology - textual anchors + verify)
+# STEP 2: Apply CSI v3 patches (textual anchors + verify)
 # ============================================================================
 RUN export OAI_DIR=/oai-ran && \
     chmod +x patch_srs_ul_v3.sh && \
@@ -78,10 +78,8 @@ RUN export OAI_DIR=/oai-ran && \
     echo "✅ CSI v3 patches applied and verified"
 
 # ============================================================================
-# STEP 3: Update CMakeLists.txt (V2 methodology - textual anchors + verify)
+# STEP 3: Update CMakeLists.txt to include CSI v3 sources
 # ============================================================================
-# Use sed to add CSI v3 sources to CMakeLists.txt
-# Find the line with nr_ul_channel_estimation.c and add our sources after it
 RUN sed -i '/\${OPENAIR1_DIR}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/a\
   ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_integration_v3.c\
   ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_logging_callback_v3.c\
@@ -90,45 +88,25 @@ RUN sed -i '/\${OPENAIR1_DIR}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/a
     grep -q "csi_integration_v3.c" CMakeLists.txt && \
     grep -q "csi_logging_callback_v3.c" CMakeLists.txt && \
     grep -q "csi_config_parser.c" CMakeLists.txt || \
-    (echo "❌ CMakeLists.txt UPDATE FAILED: CSI v3 sources not found in CMakeLists.txt" && exit 1) && \
+    (echo "❌ CMakeLists.txt UPDATE FAILED: CSI v3 sources not found" && exit 1) && \
     echo "✅ CSI v3 sources added to CMakeLists.txt and verified"
 
 # ============================================================================
-# STEP 4: Add explicit CSI v3 linking configuration (V2 methodology)
+# STEP 4: Apply CSI v3 linking configuration (V2-IDENTICAL approach)
+# Uses IMPORTED library target + foreach pattern
+# This AVOIDS CMake syntax conflicts with OAI's existing target_link_libraries
 # ============================================================================
-# Create a small cmake fragment to link CSI v3 library and json-c
-# This is appended to CMakeLists.txt for explicit control
-RUN cat >> CMakeLists.txt << 'CMAKELISTS_CSI'
+# Copy and apply the V2-compatible linking script
+COPY apply_csi_v3_cmake.sh .
+RUN chmod +x apply_csi_v3_cmake.sh && \
+    export OAI_DIR=/oai-ran && \
+    bash apply_csi_v3_cmake.sh && \
+    echo "✅ CSI v3 linking configuration applied (V2-compatible)"
 
-# ============= CSI v3 LOGGING INTEGRATION =============
-# Link prebuilt CSI v3 library and json-c
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(JSON_C json-c)
-
-if(JSON_C_FOUND)
-  include_directories(${JSON_C_INCLUDE_DIRS})
-  # Link json-c to nr-softmodem
-  set_property(TARGET nr-softmodem APPEND_STRING PROPERTY LINK_FLAGS " ${JSON_C_LDFLAGS}")
-  message(STATUS "✅ json-c library found and linked")
-else()
-  message(FATAL_ERROR "❌ json-c library not found!")
-endif()
-
-# Link CSI v3 prebuilt library
-if(EXISTS /usr/local/lib/libcsi_logging_v3.a)
-  target_link_libraries(nr-softmodem /usr/local/lib/libcsi_logging_v3.a)
-  message(STATUS "✅ CSI v3 library linked to nr-softmodem")
-else()
-  message(FATAL_ERROR "❌ libcsi_logging_v3.a not found!")
-endif()
-
-# ======================================================
-CMAKELISTS_CSI
-
-# Verify CMakeLists.txt was updated
-RUN grep -q "CSI v3 LOGGING INTEGRATION" CMakeLists.txt || \
-    (echo "❌ CSI v3 linking config not appended to CMakeLists.txt" && exit 1) && \
-    echo "✅ CSI v3 linking configuration added and verified"
+# Verify linking config was appended
+RUN grep -q "add_library(csi_logging_v3 STATIC IMPORTED GLOBAL)" /oai-ran/CMakeLists.txt || \
+    (echo "❌ CSI v3 linking config verification FAILED" && exit 1) && \
+    echo "✅ CSI v3 linking configuration verified"
 
 # ============================================================================
 # STEP 5: Build OAI with CSI v3 support
@@ -155,6 +133,11 @@ RUN dnf install -y dnf-plugins-core && \
 RUN test -f /oai-ran/cmake_targets/ran_build/build/nr-softmodem || \
     (echo "❌ nr-softmodem binary not found!" && exit 1) && \
     echo "✅ nr-softmodem binary verified"
+
+# Verify CSI v3 symbols are in the binary
+RUN nm /oai-ran/cmake_targets/ran_build/build/nr-softmodem | grep -q "nr_srs_csi_logging_invoke_v3" || \
+    (echo "❌ CSI v3 symbols not found in nr-softmodem!" && exit 1) && \
+    echo "✅ CSI v3 symbols verified in nr-softmodem"
 
 # ============================================================================
 # STEP 6: Build FlexRIC
