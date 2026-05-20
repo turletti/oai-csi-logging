@@ -47,7 +47,7 @@ RUN awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/ &
     awk '/\$\{OPENAIR1_DIR\}\/PHY\/NR_UE_TRANSPORT\/csi_rx\.c/ && !done_ue {print; print "  ${OPENAIR1_DIR}/PHY/NR_UE_TRANSPORT/csi_integration_v3.c"; done_ue=1; next} 1' CMakeLists.txt > CMakeLists.txt.tmp && mv CMakeLists.txt.tmp CMakeLists.txt && \
     echo "✅ CMakeLists.txt updated for CSI v3"
 
-# Build OAI
+# Build OAI with CSI v3 library linked
 RUN dnf install -y dnf-plugins-core && \
     dnf config-manager --set-enabled crb && \
     dnf install -y gcc-toolset-13 gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils && \
@@ -57,11 +57,12 @@ RUN dnf install -y dnf-plugins-core && \
     source /opt/rh/gcc-toolset-13/enable && \
     CXXFLAGS='-Werror=format -fstack-protector-strong' \
     CFLAGS='-Werror=format -fstack-protector-strong' \
+    LDFLAGS='-L/usr/local/lib' \
     ./build_oai -c --ninja --eNB --gNB --RU --UE --nrUE --build-e2 \
       --cmake-opt -DE2AP_VERSION=$E2AP_VERSION \
       --cmake-opt -DKPM_VERSION=$KPM_VERSION \
-      --cmake-opt '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,noexecstack' \
-      --cmake-opt '-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,noexecstack' \
+      --cmake-opt '-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,noexecstack -L/usr/local/lib' \
+      --cmake-opt '-DCMAKE_EXE_LINKER_FLAGS=-Wl,-z,noexecstack -L/usr/local/lib -lcsi_logging_v3' \
       --build-lib 'telnetsrv enbscope uescope nrscope' \
       --build-tool-opt -k10 -w USRP -t Ethernet --noavx512 && \
     echo "✅ OAI build SUCCESSFUL"
