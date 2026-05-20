@@ -3,12 +3,14 @@
 #   Valid for Rocky 9
 #
 
-# STAGE 1: Build libcsi_logging_v3 library
+# STAGE 1: Build libcsi_logging_v3 library FROM LOCAL v3-flexible
 FROM ran-base:latest AS csi-builder
-RUN cd /tmp && \
-    git clone https://github.com/turletti/oai-csi-logging.git && \
-    cd oai-csi-logging && \
-    mkdir -p build && cd build && \
+RUN dnf install -y json-c-devel pkg-config && dnf clean all
+
+WORKDIR /tmp/csi-v3
+COPY v3-flexible .
+
+RUN mkdir -p build && cd build && \
     source /opt/rh/gcc-toolset-13/enable && \
     cmake .. && make && make install && ldconfig && \
     echo "✅ libcsi_logging_v3.a built and installed"
@@ -28,14 +30,14 @@ WORKDIR /oai-ran
 COPY . .
 
 # Copy csi_integration_v3.c to both required locations
-RUN cp csi_integration_v3.c openair1/PHY/NR_ESTIMATION/ && \
-    cp csi_integration_v3.c openair1/PHY/NR_UE_TRANSPORT/ && \
+RUN cp v3-flexible/src/csi_integration_v3.c openair1/PHY/NR_ESTIMATION/ && \
+    cp v3-flexible/src/csi_integration_v3.c openair1/PHY/NR_UE_TRANSPORT/ && \
     echo "✅ csi_integration_v3.c copied"
 
-# Apply CSI v3 patches (ONLY patch_srs_ul_v3.sh for v3)
+# Apply CSI v3 patches
 RUN export OAI_DIR=/oai-ran && \
-    chmod +x patch_srs_ul_v3.sh && \
-    bash patch_srs_ul_v3.sh && \
+    chmod +x v3-flexible/patch_srs_ul_v3.sh && \
+    bash v3-flexible/patch_srs_ul_v3.sh && \
     echo "✅ CSI v3 patches applied"
 
 # Verify patches were applied
