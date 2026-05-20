@@ -33,6 +33,7 @@ int csi_ring_buffer_init_v3(csi_ring_buffer_v3_t *rb,
   // Setup metadata
   rb->metadata.granularity = config->granularity;
   rb->metadata.nb_antenna_rx = nb_antenna_rx;
+  fprintf(stderr, "[CSI-DEBUG] ring_buffer_init: nb_antenna_rx set to %u\n", nb_antenna_rx);
   rb->metadata.nb_ports_tx = nb_ports_tx;
   rb->metadata.num_antenna_indices = config->num_antenna_indices;
   rb->metadata.num_port_indices = config->num_port_indices;
