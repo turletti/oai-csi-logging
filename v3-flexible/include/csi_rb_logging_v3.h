@@ -116,3 +116,23 @@ bool csi_should_log_port_v3(const csi_ring_buffer_v3_t *rb, uint8_t port_tx);
 bool csi_should_log_subcarrier_v3(const csi_ring_buffer_v3_t *rb, uint8_t sc);
 
 #endif
+
+/* CSI v3 Public API */
+int nr_csi_logging_init_v3(const char *config_str,
+                            uint8_t nb_antenna_rx,
+                            uint8_t nb_ports_tx,
+                            const char *output_dir);
+void nr_csi_logging_enable_v3(int enable);
+void nr_csi_logging_shutdown_v3(void);
+
+/* CSI v3 Callback - called from phy_procedures_nr_gNB.c */
+void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx,
+                                   uint16_t slot_rx,
+                                   uint16_t rnti,
+                                   uint8_t nb_antennas_rx,
+                                   uint8_t N_ap,
+                                   uint8_t N_symb_SRS,
+                                   uint16_t ofdm_symbol_size,
+                                   uint16_t bwp_start,
+                                   uint16_t bwp_size,
+                                   const c16_t srs_estimated_channel_freq[][N_ap][ofdm_symbol_size * N_symb_SRS]);
