@@ -36,10 +36,11 @@ typedef struct {
   
   // Subcarrier sampling
   uint8_t subcarrier_sampling;
+  bool include_header;
   
   // Output
   char output_dir[256];
-  bool header_written;  // Track if header was written
+  bool include_header;  // Track if header was written
 } csi_config_v3_t;
 
 /* ============================================================
@@ -71,6 +72,7 @@ typedef struct {
   uint8_t num_port_indices;
   uint8_t port_indices[4];
   uint8_t subcarrier_sampling;
+  bool include_header;
 } csi_csv_metadata_v3_t;
 
 /* ============================================================
