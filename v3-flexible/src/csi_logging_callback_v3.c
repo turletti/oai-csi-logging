@@ -97,7 +97,7 @@ int csi_ring_buffer_init_v3(csi_ring_buffer_v3_t *rb,
 //     
 //     fprintf(rb->csv_file, "# %s\n", json_object_to_json_string(metadata));
 //     json_object_put(metadata);
-  }
+//  }
   
   // Write CSV header based on granularity and MIMO config
   fprintf(rb->csv_file, "frame,slot,rnti");
