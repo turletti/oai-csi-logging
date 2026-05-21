@@ -40,6 +40,7 @@ typedef struct {
   // Output
   char output_dir[256];
   bool include_header;
+  bool header_written;  // Track if header was written
 } csi_config_v3_t;
 
 /* ============================================================
