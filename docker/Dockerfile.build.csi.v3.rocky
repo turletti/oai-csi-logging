@@ -74,7 +74,7 @@ RUN export OAI_DIR=/oai-ran && \
     chmod +x patch_srs_ul_v3.sh && \
     bash patch_srs_ul_v3.sh && \
     bash patch_csi_init_main_v3.sh && \
-    grep -q "nr_srs_csi_logging_invoke_v3" /oai-ran/openair1/SCHED_NR/phy_procedures_nr_gNB.c || \
+    grep -q "nr_csi_logging_init_v3" /oai-ran/executables/nr-softmodem.c && grep -q "nr_srs_csi_logging_invoke_v3" /oai-ran/openair1/SCHED_NR/phy_procedures_nr_gNB.c || \
     (echo "❌ PATCH VERIFICATION FAILED: nr_srs_csi_logging_invoke_v3 not found" && exit 1) && \
     echo "✅ CSI v3 patches applied and verified"
 
@@ -136,7 +136,7 @@ RUN test -f /oai-ran/cmake_targets/ran_build/build/nr-softmodem || \
     echo "✅ nr-softmodem binary verified"
 
 # Verify CSI v3 symbols are in the binary
-RUN nm /oai-ran/cmake_targets/ran_build/build/nr-softmodem | grep -q "nr_srs_csi_logging_invoke_v3" || \
+RUN nm /oai-ran/cmake_targets/ran_build/build/nr-softmodem | grep -q "nr_csi_logging_init_v3" /oai-ran/executables/nr-softmodem.c && grep -q "nr_srs_csi_logging_invoke_v3" || \
     (echo "❌ CSI v3 symbols not found in nr-softmodem!" && exit 1) && \
     echo "✅ CSI v3 symbols verified in nr-softmodem"
 
