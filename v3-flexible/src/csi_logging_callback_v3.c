@@ -242,3 +242,27 @@ void csi_ring_buffer_free_v3(csi_ring_buffer_v3_t *rb) {
   
   memset(rb, 0, sizeof(*rb));
 }
+
+/* Helper functions to check if antenna/port/subcarrier should be logged */
+bool csi_should_log_antenna_v3(const csi_ring_buffer_v3_t *rb, uint8_t ant_rx) {
+  if (!rb) return false;
+  if (rb->metadata.num_antenna_indices == 0) return true;
+  for (int i = 0; i < rb->metadata.num_antenna_indices; i++) {
+    if (rb->metadata.antenna_indices[i] == ant_rx) return true;
+  }
+  return false;
+}
+
+bool csi_should_log_port_v3(const csi_ring_buffer_v3_t *rb, uint8_t port_tx) {
+  if (!rb) return false;
+  if (rb->metadata.num_port_indices == 0) return true;
+  for (int i = 0; i < rb->metadata.num_port_indices; i++) {
+    if (rb->metadata.port_indices[i] == port_tx) return true;
+  }
+  return false;
+}
+
+bool csi_should_log_subcarrier_v3(const csi_ring_buffer_v3_t *rb, uint8_t sc) {
+  if (!rb) return false;
+  return true;
+}
