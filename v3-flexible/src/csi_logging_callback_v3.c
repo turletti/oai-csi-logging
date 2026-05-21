@@ -38,6 +38,7 @@ int csi_ring_buffer_init_v3(csi_ring_buffer_v3_t *rb,
   rb->metadata.num_antenna_indices = config->num_antenna_indices;
   rb->metadata.num_port_indices = config->num_port_indices;
   rb->metadata.subcarrier_sampling = config->subcarrier_sampling;
+  rb->metadata.include_header = config->include_header;
   
   memcpy(rb->metadata.antenna_indices, config->antenna_indices, sizeof(config->antenna_indices));
   memcpy(rb->metadata.port_indices, config->port_indices, sizeof(config->port_indices));
