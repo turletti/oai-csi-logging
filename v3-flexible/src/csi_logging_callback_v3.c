@@ -116,7 +116,7 @@ int csi_ring_buffer_init_v3(csi_ring_buffer_v3_t *rb,
   fprintf(rb->csv_file, ",real,imag\n");
   
   fflush(rb->csv_file);
-  rb->header_written = true;
+  rb->header_written = false;
   
   return 0;
 }
@@ -197,7 +197,7 @@ int csi_ring_buffer_flush_v3(csi_ring_buffer_v3_t *rb) {
     fprintf(rb->csv_file, "# %s\n", json_object_to_json_string(metadata));
     fprintf(rb->csv_file, "frame,slot,rnti,ant_rx,port_tx,rb,real,imag\n");
     json_object_put(metadata);
-    rb->header_written = true;
+    rb->header_written = false;
   }
   
   while (rb->read_idx < rb->write_idx) {
