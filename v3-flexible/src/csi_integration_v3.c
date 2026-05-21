@@ -69,7 +69,7 @@ void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx,
   }
   static int g_csi_lazy_init_done = 0;
   if (!g_csi_lazy_init_done) {
-    const char *config_str = getenv("CSI_CONFIG") ?: "";
+    const char *config_str = getenv("CSI_CONFIG");
     const char *out_dir = getenv("CSI_OUTPUT_DIR") ?: "/data/csi";
     nr_csi_logging_init_v3(config_str, nb_antennas_rx, 1, out_dir);
     g_csi_lazy_init_done = 1;
