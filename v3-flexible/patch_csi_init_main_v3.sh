@@ -28,7 +28,7 @@ if ! grep -q "nr_csi_logging_init_v3" "$FILE"; then
     APPEND_CONFIG("subcarrier_sampling", "CSI_SUBCARRIER_SAMPLING");
     
     const char *out_dir = getenv("CSI_OUTPUT_DIR");
-    nr_csi_logging_init_v3(csi_config, 64, 1, out_dir ? out_dir : "/data/csi");
+    nr_csi_logging_init_v3(csi_config, gNB->frame_parms.nb_antennas_rx, 1, out_dir ? out_dir : "/data/csi");
   }
 INIT
 
