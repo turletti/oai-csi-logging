@@ -161,6 +161,43 @@ int csi_push_measurement_v3(csi_ring_buffer_v3_t *rb,
 /* Flush ring buffer to CSV */
 int csi_ring_buffer_flush_v3(csi_ring_buffer_v3_t *rb) {
   if (!rb || !rb->csv_file) return -1;
+  // Write header on first flush with actual nb_antenna_rx
+  if (!rb->header_written && rb->metadata.include_header) {
+    json_object *metadata = json_object_new_object();
+    json_object_object_add(metadata, "granularity",
+      json_object_new_string(rb->metadata.granularity == CSI_GRAN_RB ? "rb" : "subcarrier"));
+    json_object_object_add(metadata, "nb_antenna_rx",
+      json_object_new_int(rb->metadata.nb_antenna_rx));
+    json_object_object_add(metadata, "nb_ports_tx",
+      json_object_new_int(rb->metadata.nb_ports_tx));
+    json_object *ant_arr = json_object_new_array();
+    if (rb->metadata.num_antenna_indices == 0) {
+      for (int i = 0; i < rb->metadata.nb_antenna_rx; i++) {
+        json_object_array_add(ant_arr, json_object_new_int(i));
+      }
+    } else {
+      for (int i = 0; i < rb->metadata.num_antenna_indices; i++) {
+        json_object_array_add(ant_arr, json_object_new_int(rb->metadata.antenna_indices[i]));
+      }
+    }
+    json_object_object_add(metadata, "antenna_selection", ant_arr);
+    json_object *port_arr = json_object_new_array();
+    if (rb->metadata.num_port_indices == 0) {
+      for (int i = 0; i < rb->metadata.nb_ports_tx; i++) {
+        json_object_array_add(port_arr, json_object_new_int(i));
+      }
+    } else {
+      for (int i = 0; i < rb->metadata.num_port_indices; i++) {
+        json_object_array_add(port_arr, json_object_new_int(rb->metadata.port_indices[i]));
+      }
+    }
+    json_object_object_add(metadata, "port_selection", port_arr);
+    json_object_object_add(metadata, "subcarrier_sampling", json_object_new_int(rb->metadata.subcarrier_sampling));
+    fprintf(rb->csv_file, "# %s\n", json_object_to_json_string(metadata));
+    fprintf(rb->csv_file, "frame,slot,rnti,ant_rx,port_tx,rb,real,imag\n");
+    json_object_put(metadata);
+    rb->header_written = true;
+  }
   
   while (rb->read_idx < rb->write_idx) {
     uint32_t idx = rb->read_idx % CSI_RING_BUFFER_SIZE;
