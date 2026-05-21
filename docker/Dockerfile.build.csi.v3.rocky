@@ -70,6 +70,7 @@ RUN test -f openair1/PHY/NR_ESTIMATION/csi_v3_support/csi_integration_v3.c && \
 # ============================================================================
 # STEP 2: Apply CSI v3 patches (textual anchors + verify)
 # ============================================================================
+RUN test -f patch_csi_init_main_v3.sh || (echo "❌ patch_csi_init_main_v3.sh not found" && ls -la && exit 1)
 RUN export OAI_DIR=/oai-ran && \
     chmod +x patch_srs_ul_v3.sh && \
     bash patch_srs_ul_v3.sh && \
