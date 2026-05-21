@@ -74,6 +74,7 @@ void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx,
     nr_csi_logging_init_v3(config_str, nb_antennas_rx, 1, out_dir);
     g_csi_lazy_init_done = 1;
   if (g_csi_enabled) fprintf(stderr, "[CSI-DEBUG] invoke: frame=%u slot=%u rnti=%u nb_ant=%u enabled=%d initialized=%d\n", frame_rx, slot_rx, rnti, nb_antennas_rx, g_csi_enabled, g_csi_initialized);
+  }
   fprintf(stderr, "[CSI-DEBUG] bwp: start=%u size=%u N_ap=%u N_symb=%u ofdm_size=%u\n", bwp_start, bwp_size, N_ap, N_symb_SRS, ofdm_symbol_size);
   if (!g_csi_enabled || !g_csi_initialized) {
     return;
