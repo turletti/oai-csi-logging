@@ -32,7 +32,7 @@ int nr_csi_logging_init_v3(const char *config_str,
 
   csi_config_v3_t config = {0};
 
-  if (csi_config_parse_v3(config_str, &config) < 0) {
+  if (csi_config_parse_env_v3(&config) < 0) {
     fprintf(stderr, "ERROR: Failed to parse CSI config\n");
     return -1;
   }

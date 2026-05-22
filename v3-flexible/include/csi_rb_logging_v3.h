@@ -71,6 +71,7 @@ typedef struct {
  * Public API
  * ============================================================ */
 int csi_config_parse_v3(const char *config_str, csi_config_v3_t *config);
+int csi_config_parse_env_v3(csi_config_v3_t *config);
 int csi_ring_buffer_init_v3(csi_ring_buffer_v3_t *rb,
                              const csi_config_v3_t *config,
                              uint8_t nb_antenna_rx,
