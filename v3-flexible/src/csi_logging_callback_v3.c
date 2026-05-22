@@ -17,20 +17,18 @@ int csi_ring_buffer_init_v3(csi_ring_buffer_v3_t *rb,
                              uint8_t nb_ports_tx,
                              const char *output_dir) {
   if (!rb || !config) return -1;
-  
-  // Allocate buffer
+
   rb->buffer = (csi_measurement_v3_t *)malloc(CSI_RING_BUFFER_SIZE * sizeof(csi_measurement_v3_t));
   if (!rb->buffer) {
     fprintf(stderr, "ERROR: malloc failed for CSI ring buffer\n");
     return -1;
   }
-  
+
   rb->write_idx = 0;
   rb->read_idx = 0;
   rb->count = 0;
   rb->header_written = false;
-  
-  // Setup metadata
+
   rb->metadata.granularity = config->granularity;
   rb->metadata.nb_antenna_rx = nb_antenna_rx;
   fprintf(stderr, "[CSI-DEBUG] ring_buffer_init: nb_antenna_rx set to %u\n", nb_antenna_rx);
@@ -39,17 +37,15 @@ int csi_ring_buffer_init_v3(csi_ring_buffer_v3_t *rb,
   rb->metadata.num_port_indices = config->num_port_indices;
   rb->metadata.subcarrier_sampling = config->subcarrier_sampling;
   rb->metadata.include_header = config->include_header;
-  
+
   memcpy(rb->metadata.antenna_indices, config->antenna_indices, sizeof(config->antenna_indices));
   memcpy(rb->metadata.port_indices, config->port_indices, sizeof(config->port_indices));
-  
-  // Create output directory
+
   mkdir(output_dir, 0755);
-  
-  // Open CSV file
+
   char csv_path[512];
   snprintf(csv_path, sizeof(csv_path), "%s/csi_per_rb.csv", output_dir);
-  
+
   rb->csv_file = fopen(csv_path, "w");
   rb->header_written = false;
   if (!rb->csv_file) {
@@ -57,67 +53,7 @@ int csi_ring_buffer_init_v3(csi_ring_buffer_v3_t *rb,
     free(rb->buffer);
     return -1;
   }
-  
-  // Write JSON metadata header if enabled
-//   if (config->include_header) {
-//     json_object *metadata = json_object_new_object();
-//     
-//     json_object_object_add(metadata, "granularity",
-//       json_object_new_string(config->granularity == CSI_GRAN_RB ? "rb" : "subcarrier"));
-//     json_object_object_add(metadata, "nb_antenna_rx",
-//       json_object_new_int(nb_antenna_rx));
-//     json_object_object_add(metadata, "nb_ports_tx",
-//       json_object_new_int(nb_ports_tx));
-//     
-//     json_object *ant_arr = json_object_new_array();
-//     if (config->num_antenna_indices == 0) {
-//       for (int i = 0; i < nb_antenna_rx; i++) {
-//         json_object_array_add(ant_arr, json_object_new_int(i));
-//       }
-//     } else {
-//       for (int i = 0; i < config->num_antenna_indices; i++) {
-//         json_object_array_add(ant_arr, json_object_new_int(config->antenna_indices[i]));
-//       }
-//     }
-//     json_object_object_add(metadata, "antenna_selection", ant_arr);
-//     
-//     json_object *port_arr = json_object_new_array();
-//     if (config->num_port_indices == 0) {
-//       for (int i = 0; i < nb_ports_tx; i++) {
-//         json_object_array_add(port_arr, json_object_new_int(i));
-//       }
-//     } else {
-//       for (int i = 0; i < config->num_port_indices; i++) {
-//         json_object_array_add(port_arr, json_object_new_int(config->port_indices[i]));
-//       }
-//     }
-//     json_object_object_add(metadata, "port_selection", port_arr);
-//     json_object_object_add(metadata, "subcarrier_sampling",
-//       json_object_new_int(config->subcarrier_sampling));
-//     
-//     fprintf(rb->csv_file, "# %s\n", json_object_to_json_string(metadata));
-//     json_object_put(metadata);
-//  }
-  
-  // Write CSV header based on granularity and MIMO config
-  fprintf(rb->csv_file, "frame,slot,rnti");
-  
-  // Add MIMO columns if needed
-  if (nb_antenna_rx > 1 || nb_ports_tx > 1) {
-    fprintf(rb->csv_file, ",ant_rx,port_tx");
-  }
-  
-  fprintf(rb->csv_file, ",rb");
-  
-  if (config->granularity == CSI_GRAN_SUBCARRIER) {
-    fprintf(rb->csv_file, ",subcarrier");
-  }
-  
-  fprintf(rb->csv_file, ",real,imag\n");
-  
-  fflush(rb->csv_file);
-  rb->header_written = false;
-  
+
   return 0;
 }
 
