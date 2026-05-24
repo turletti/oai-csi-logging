@@ -1,21 +1,50 @@
-/*
- * CSI Integration v3
- */
-
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <stdlib.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <sched.h>
 #include "csi_rb_logging_v3.h"
+#include <stdlib.h>
 
-// c16_t struct from OAI (will be included via OAI headers at link time)
-// For standalone compilation, define it locally
 #ifndef c16_t
 typedef struct {
-  int16_t i;  // Real (I)
-  int16_t q;  // Imaginary (Q)
+  int16_t i;
+  int16_t q;
 } c16_t;
 #endif
+
+static pthread_t g_csi_flush_thread;
+static pthread_mutex_t g_csi_flush_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_csi_flush_stop = 0;
+
+void* csi_flush_thread_func(void *arg) {
+  // Read CSI_FLUSH_CORE env var (default: 32)
+  int core_id = 32;
+  const char *core_env = getenv("CSI_FLUSH_CORE");
+  if (core_env) {
+    core_id = atoi(core_env);
+  }
+  
+  // Pin to specified core
+  cpu_set_t cpuset;
+  CPU_ZERO(&cpuset);
+  CPU_SET(core_id, &cpuset);
+  pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+  fprintf(stderr, "[CSI] Flush thread pinned to core %d\n", core_id);
+
+  csi_ring_buffer_v3_t *rb = (csi_ring_buffer_v3_t *)arg;
+  while (!g_csi_flush_stop) {
+    usleep(100000);
+    pthread_mutex_lock(&g_csi_flush_mutex);
+    if (rb->count > 0) {
+      csi_ring_buffer_flush_v3(rb);
+    }
+    pthread_mutex_unlock(&g_csi_flush_mutex);
+  }
+  return NULL;
+}
 
 static csi_ring_buffer_v3_t g_csi_rb = {0};
 static bool g_csi_initialized = false;
@@ -45,6 +74,9 @@ int nr_csi_logging_init_v3(const char *config_str,
   g_csi_initialized = true;
   g_csi_enabled = 1;
 
+  g_csi_flush_stop = 0;
+  pthread_create(&g_csi_flush_thread, NULL, csi_flush_thread_func, &g_csi_rb);
+
   printf("[CSI] Initialized v3 logging\n");
   printf("  Granularity: %s\n", config.granularity == CSI_GRAN_RB ? "RB" : "Subcarrier");
   printf("  RX antennas: %u\n", nb_antenna_rx);
@@ -64,21 +96,12 @@ void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx,
                                    uint16_t bwp_start,
                                    uint16_t bwp_size,
                                    const c16_t srs_estimated_channel_freq[][N_ap][ofdm_symbol_size * N_symb_SRS]) {
-  static unsigned int call_count = 0;
-  if (++call_count % 100 == 0 && g_csi_initialized) {
-    csi_ring_buffer_flush_v3(&g_csi_rb);
-  }
-
   static int g_csi_lazy_init_done = 0;
   if (!g_csi_lazy_init_done) {
-    const char *config_str = getenv("CSI_CONFIG");
     const char *out_dir = getenv("CSI_OUTPUT_DIR") ?: "/data/csi";
-    nr_csi_logging_init_v3(config_str, nb_antennas_rx, 1, out_dir);
+    nr_csi_logging_init_v3(NULL, nb_antennas_rx, 1, out_dir);
     g_csi_lazy_init_done = 1;
   }
-
-  if (g_csi_enabled) fprintf(stderr, "[CSI-DEBUG] invoke: frame=%u slot=%u rnti=%u nb_ant=%u enabled=%d initialized=%d\n", frame_rx, slot_rx, rnti, nb_antennas_rx, g_csi_enabled, g_csi_initialized);
-  fprintf(stderr, "[CSI-DEBUG] bwp: start=%u size=%u N_ap=%u N_symb=%u ofdm_size=%u\n", bwp_start, bwp_size, N_ap, N_symb_SRS, ofdm_symbol_size);
 
   if (!g_csi_enabled || !g_csi_initialized) {
     return;
@@ -86,6 +109,8 @@ void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx,
 
   uint8_t nb_ports_tx = (1 << N_ap);
 
+  pthread_mutex_lock(&g_csi_flush_mutex);
+  
   for (uint8_t ant_rx = 0; ant_rx < nb_antennas_rx; ant_rx++) {
     if (!csi_should_log_antenna_v3(&g_csi_rb, ant_rx)) {
       continue;
@@ -141,6 +166,8 @@ void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx,
       }
     }
   }
+
+  pthread_mutex_unlock(&g_csi_flush_mutex);
 }
 
 void nr_csi_logging_enable_v3(int enable) {
@@ -150,8 +177,12 @@ void nr_csi_logging_enable_v3(int enable) {
 
 void nr_csi_logging_shutdown_v3(void) {
   if (g_csi_initialized) {
+    g_csi_flush_stop = 1;
+    pthread_join(g_csi_flush_thread, NULL);
+    pthread_mutex_lock(&g_csi_flush_mutex);
     csi_ring_buffer_flush_v3(&g_csi_rb);
     csi_ring_buffer_free_v3(&g_csi_rb);
+    pthread_mutex_unlock(&g_csi_flush_mutex);
     g_csi_initialized = false;
   }
 }
