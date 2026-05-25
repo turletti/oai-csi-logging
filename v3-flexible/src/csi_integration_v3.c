@@ -36,7 +36,7 @@ void* csi_flush_thread_func(void *arg) {
 
   csi_ring_buffer_v3_t *rb = (csi_ring_buffer_v3_t *)arg;
   while (!g_csi_flush_stop) {
-    usleep(100000);
+    usleep(5000000);
     pthread_mutex_lock(&g_csi_flush_mutex);
     if (rb->count > 0) {
       csi_ring_buffer_flush_v3(rb);
