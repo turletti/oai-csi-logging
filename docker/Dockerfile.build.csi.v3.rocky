@@ -139,6 +139,11 @@ RUN test -f /oai-ran/cmake_targets/ran_build/build/nr-softmodem || \
 # Verify CSI v3 symbols are in the binary
 RUN nm /oai-ran/cmake_targets/ran_build/build/nr-softmodem | grep -q "nr_csi_logging_init_v3" && echo "✅ CSI v3 init found" || (echo "⚠️  CSI init symbol not found (may be stripped)" && true)
 
+# Verify patch was applied in the binary
+RUN strings /oai-ran/cmake_targets/ran_build/build/nr-softmodem | grep -q "nr_srs_csi_logging_invoke_v3" && \
+    echo "✅ CSI invoke symbol found in binary" || \
+    (echo "❌ CSI invoke symbol NOT found - patch failed" && exit 1)
+
 # ============================================================================
 # STEP 6: Build FlexRIC
 # ============================================================================
