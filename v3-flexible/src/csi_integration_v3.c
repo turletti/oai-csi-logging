@@ -17,10 +17,8 @@ typedef struct {
 #endif
 
 static pthread_t g_csi_flush_thread;
-static pthread_t g_csi_timestamp_thread;
 static pthread_mutex_t g_csi_flush_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_csi_flush_stop = 0;
-static int g_csi_timestamp_stop = 0;
 
 void* csi_flush_thread_func(void *arg) {
   int core_id = 32;
@@ -40,28 +38,14 @@ void* csi_flush_thread_func(void *arg) {
     usleep(5000000);
     pthread_mutex_lock(&g_csi_flush_mutex);
     if (rb->count > 0) {
-      csi_ring_buffer_flush_v3(rb);
-    }
-    pthread_mutex_unlock(&g_csi_flush_mutex);
-  }
-  return NULL;
-}
-
-void* csi_timestamp_thread_func(void *arg) {
-  csi_ring_buffer_v3_t *rb = (csi_ring_buffer_v3_t *)arg;
-  
-  while (!g_csi_timestamp_stop) {
-    sleep(1);
-    
-    time_t now = time(NULL);
-    struct tm *tm_info = localtime(&now);
-    char timestamp[32];
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
-    
-    pthread_mutex_lock(&g_csi_flush_mutex);
-    if (rb->csv_file) {
+      // Write timestamp before flushing data
+      time_t now = time(NULL);
+      struct tm *tm_info = localtime(&now);
+      char timestamp[32];
+      strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
       fprintf(rb->csv_file, "# TIMESTAMP: %s\n", timestamp);
-      fflush(rb->csv_file);
+      
+      csi_ring_buffer_flush_v3(rb);
     }
     pthread_mutex_unlock(&g_csi_flush_mutex);
   }
@@ -98,9 +82,6 @@ int nr_csi_logging_init_v3(const char *config_str,
 
   g_csi_flush_stop = 0;
   pthread_create(&g_csi_flush_thread, NULL, csi_flush_thread_func, &g_csi_rb);
-
-  g_csi_timestamp_stop = 0;
-  pthread_create(&g_csi_timestamp_thread, NULL, csi_timestamp_thread_func, &g_csi_rb);
 
   printf("[CSI] Initialized v3 logging\n");
   printf("  Granularity: %s\n", config.granularity == CSI_GRAN_RB ? "RB" : "Subcarrier");
@@ -203,9 +184,7 @@ void nr_csi_logging_enable_v3(int enable) {
 void nr_csi_logging_shutdown_v3(void) {
   if (g_csi_initialized) {
     g_csi_flush_stop = 1;
-    g_csi_timestamp_stop = 1;
     pthread_join(g_csi_flush_thread, NULL);
-    pthread_join(g_csi_timestamp_thread, NULL);
     pthread_mutex_lock(&g_csi_flush_mutex);
     csi_ring_buffer_flush_v3(&g_csi_rb);
     csi_ring_buffer_free_v3(&g_csi_rb);
