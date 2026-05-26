@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <sched.h>
+#include <time.h>
 #include "csi_rb_logging_v3.h"
 #include <stdlib.h>
 
@@ -16,18 +17,18 @@ typedef struct {
 #endif
 
 static pthread_t g_csi_flush_thread;
+static pthread_t g_csi_timestamp_thread;
 static pthread_mutex_t g_csi_flush_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_csi_flush_stop = 0;
+static int g_csi_timestamp_stop = 0;
 
 void* csi_flush_thread_func(void *arg) {
-  // Read CSI_FLUSH_CORE env var (default: 32)
   int core_id = 32;
   const char *core_env = getenv("CSI_FLUSH_CORE");
   if (core_env) {
     core_id = atoi(core_env);
   }
-  
-  // Pin to specified core
+
   cpu_set_t cpuset;
   CPU_ZERO(&cpuset);
   CPU_SET(core_id, &cpuset);
@@ -40,6 +41,27 @@ void* csi_flush_thread_func(void *arg) {
     pthread_mutex_lock(&g_csi_flush_mutex);
     if (rb->count > 0) {
       csi_ring_buffer_flush_v3(rb);
+    }
+    pthread_mutex_unlock(&g_csi_flush_mutex);
+  }
+  return NULL;
+}
+
+void* csi_timestamp_thread_func(void *arg) {
+  csi_ring_buffer_v3_t *rb = (csi_ring_buffer_v3_t *)arg;
+  
+  while (!g_csi_timestamp_stop) {
+    sleep(1);
+    
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char timestamp[32];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
+    
+    pthread_mutex_lock(&g_csi_flush_mutex);
+    if (rb->csv_file) {
+      fprintf(rb->csv_file, "# TIMESTAMP: %s\n", timestamp);
+      fflush(rb->csv_file);
     }
     pthread_mutex_unlock(&g_csi_flush_mutex);
   }
@@ -77,6 +99,9 @@ int nr_csi_logging_init_v3(const char *config_str,
   g_csi_flush_stop = 0;
   pthread_create(&g_csi_flush_thread, NULL, csi_flush_thread_func, &g_csi_rb);
 
+  g_csi_timestamp_stop = 0;
+  pthread_create(&g_csi_timestamp_thread, NULL, csi_timestamp_thread_func, &g_csi_rb);
+
   printf("[CSI] Initialized v3 logging\n");
   printf("  Granularity: %s\n", config.granularity == CSI_GRAN_RB ? "RB" : "Subcarrier");
   printf("  RX antennas: %u\n", nb_antenna_rx);
@@ -110,7 +135,7 @@ void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx,
   uint8_t nb_ports_tx = (1 << N_ap);
 
   pthread_mutex_lock(&g_csi_flush_mutex);
-  
+
   for (uint8_t ant_rx = 0; ant_rx < nb_antennas_rx; ant_rx++) {
     if (!csi_should_log_antenna_v3(&g_csi_rb, ant_rx)) {
       continue;
@@ -178,7 +203,9 @@ void nr_csi_logging_enable_v3(int enable) {
 void nr_csi_logging_shutdown_v3(void) {
   if (g_csi_initialized) {
     g_csi_flush_stop = 1;
+    g_csi_timestamp_stop = 1;
     pthread_join(g_csi_flush_thread, NULL);
+    pthread_join(g_csi_timestamp_thread, NULL);
     pthread_mutex_lock(&g_csi_flush_mutex);
     csi_ring_buffer_flush_v3(&g_csi_rb);
     csi_ring_buffer_free_v3(&g_csi_rb);
