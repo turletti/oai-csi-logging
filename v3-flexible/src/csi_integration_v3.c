@@ -44,6 +44,7 @@ void* csi_flush_thread_func(void *arg) {
       char timestamp[32];
       strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
       fprintf(rb->csv_file, "# TIMESTAMP: %s\n", timestamp);
+      fflush(rb->csv_file);
       
       csi_ring_buffer_flush_v3(rb);
     }
