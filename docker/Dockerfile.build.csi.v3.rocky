@@ -82,11 +82,9 @@ RUN export OAI_DIR=/oai-ran && \
 # ============================================================================
 # STEP 3: Update CMakeLists.txt to include CSI v3 sources
 # ============================================================================
-RUN sed -i '/\${OPENAIR1_DIR}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/a\
-  ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_integration_v3.c\
-  ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_logging_callback_v3.c\
-  ${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_config_parser.c' \
-    CMakeLists.txt && \
+RUN sed -i '/\${OPENAIR1_DIR}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/a\  \${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_integration_v3.c' CMakeLists.txt && \
+    sed -i '/\${OPENAIR1_DIR}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/a\  \${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_logging_callback_v3.c' CMakeLists.txt && \
+    sed -i '/\${OPENAIR1_DIR}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/a\  \${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_config_parser.c' CMakeLists.txt && \
     grep -q "csi_integration_v3.c" CMakeLists.txt && \
     grep -q "csi_logging_callback_v3.c" CMakeLists.txt && \
     grep -q "csi_config_parser.c" CMakeLists.txt || \
