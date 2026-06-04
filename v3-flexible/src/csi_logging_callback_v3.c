@@ -131,7 +131,11 @@ int csi_ring_buffer_flush_v3(csi_ring_buffer_v3_t *rb) {
     json_object_object_add(metadata, "port_selection", port_arr);
     json_object_object_add(metadata, "subcarrier_sampling", json_object_new_int(rb->metadata.subcarrier_sampling));
     fprintf(rb->csv_file, "# %s\n", json_object_to_json_string(metadata));
-    fprintf(rb->csv_file, "frame,slot,rnti,ant_rx,port_tx,rb,real,imag\n");
+    if (rb->metadata.nb_antenna_rx > 1 || rb->metadata.nb_ports_tx > 1) {
+      fprintf(rb->csv_file, "frame,slot,rnti,ant_rx,port_tx,rb,real,imag\n");
+    } else {
+      fprintf(rb->csv_file, "frame,slot,rnti,rb,real,imag\n");
+    }
     json_object_put(metadata);
     rb->header_written = false;
   }
