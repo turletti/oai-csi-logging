@@ -80,6 +80,20 @@ RUN export OAI_DIR=/oai-ran && \
     echo "✅ CSI v3 patches applied and verified"
 
 # ============================================================================
+# STEP 2b: Fix yaml-cpp 0.6.3 int8/char misparse (RedCap r17 + ul_max_mcs).
+# EPEL9 freezes yaml-cpp at 0.6.3 (SONAME policy), so we widen the OAI call
+# site (config_yaml.cpp as<int8_t>/as<uint8_t> -> as<int16_t>/as<uint16_t>).
+# Idempotent + fails the build if the read idiom is gone (upstream refactor).
+# ============================================================================
+COPY patch_oai_yaml_int8.sh .
+RUN chmod +x patch_oai_yaml_int8.sh && \
+    bash patch_oai_yaml_int8.sh /oai-ran && \
+    grep -q 'as<int16_t>() /\*RC8\*/' /oai-ran/common/config/yaml/config_yaml.cpp && \
+    grep -q 'as<uint16_t>() /\*RC8\*/' /oai-ran/common/config/yaml/config_yaml.cpp || \
+    (echo "❌ YAML int8 patch verification FAILED" && exit 1) && \
+    echo "✅ yaml-cpp int8 parser patch applied and verified"
+
+# ============================================================================
 # STEP 3: Update CMakeLists.txt to include CSI v3 sources
 # ============================================================================
 RUN sed -i '/\${OPENAIR1_DIR}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/a\  \${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_integration_v3.c' CMakeLists.txt && \
