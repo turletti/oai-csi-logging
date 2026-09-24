@@ -1,3 +1,8 @@
 build/
 *.o
 *.a
+__pycache__/
+*.pyc
+v3-flexible/test/test_layout
+v3-flexible/test/test_latency
+v3-flexible/test/test_oai_copy
