@@ -72,6 +72,7 @@ typedef struct {
   csi_csv_metadata_v3_t metadata;
   FILE *csv_file;
   bool header_written;
+  uint32_t dropped;   /* v3.1: rows dropped because the ring was full (reported then reset at each flush) */
 } csi_ring_buffer_v3_t;
 /* ============================================================
  * Public API
@@ -89,6 +90,10 @@ int csi_push_measurement_v3(csi_ring_buffer_v3_t *rb,
                              uint16_t rb_idx, uint8_t subcarrier_idx,
                              int16_t real, int16_t imag);
 int csi_ring_buffer_flush_v3(csi_ring_buffer_v3_t *rb);
+/* v3.1: copy pending rows to dst (capacity CSI_RING_BUFFER_SIZE), mark them consumed; call under the mutex */
+uint32_t csi_ring_buffer_snapshot_v3(csi_ring_buffer_v3_t *rb, csi_measurement_v3_t *dst);
+/* v3.1: write header (once) + rows to the CSV; only the flush thread (or shutdown) calls it */
+int csi_write_rows_v3(csi_ring_buffer_v3_t *rb, const csi_measurement_v3_t *rows, uint32_t n);
 void csi_ring_buffer_free_v3(csi_ring_buffer_v3_t *rb);
 bool csi_should_log_antenna_v3(const csi_ring_buffer_v3_t *rb, uint8_t ant_rx);
 bool csi_should_log_port_v3(const csi_ring_buffer_v3_t *rb, uint8_t port_tx);

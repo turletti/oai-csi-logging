@@ -8,6 +8,7 @@
 #include <time.h>
 #include "csi_rb_logging_v3.h"
 #include <stdlib.h>
+#include <string.h>
 
 #ifndef c16_t
 typedef struct {
@@ -34,23 +35,35 @@ void* csi_flush_thread_func(void *arg) {
   fprintf(stderr, "[CSI] Flush thread pinned to core %d\n", core_id);
 
   csi_ring_buffer_v3_t *rb = (csi_ring_buffer_v3_t *)arg;
+  /* v3.1: private copy so that the file is written without holding the mutex shared with L1 */
+  csi_measurement_v3_t *snap = malloc(CSI_RING_BUFFER_SIZE * sizeof(*snap));
+  if (!snap) {
+    fprintf(stderr, "[CSI] ERROR: cannot allocate flush buffer, flush thread disabled\n");
+    return NULL;
+  }
+  memset(snap, 0, CSI_RING_BUFFER_SIZE * sizeof(*snap));  /* pre-fault pages outside the mutex */
   while (!g_csi_flush_stop) {
     usleep(5000000);
+    uint32_t n = 0, dropped = 0;
+    char timestamp[32] = "";
     pthread_mutex_lock(&g_csi_flush_mutex);
-    if (rb->count > 0) {
-      // Write timestamp before flushing data
+    if (rb->count > 0 || rb->dropped > 0) {
       time_t now = time(NULL);
       struct tm tm_utc;
-      gmtime_r(&now, &tm_utc);  /* v3.1: UTC (was pod local time) */
-      char timestamp[32];
+      gmtime_r(&now, &tm_utc);  /* UTC, taken at snapshot = end of the batch */
       strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &tm_utc);
-      fprintf(rb->csv_file, "# TIMESTAMP: %s\n", timestamp);
-      fflush(rb->csv_file);
-      
-      csi_ring_buffer_flush_v3(rb);
+      n = csi_ring_buffer_snapshot_v3(rb, snap);
+      dropped = rb->dropped;
+      rb->dropped = 0;
     }
     pthread_mutex_unlock(&g_csi_flush_mutex);
+    if (timestamp[0]) {  /* file I/O outside the mutex */
+      fprintf(rb->csv_file, "# TIMESTAMP: %s\n", timestamp);
+      if (dropped) fprintf(rb->csv_file, "# DROPPED: %u\n", dropped);
+      csi_write_rows_v3(rb, snap, n);
+    }
   }
+  free(snap);
   return NULL;
 }
 

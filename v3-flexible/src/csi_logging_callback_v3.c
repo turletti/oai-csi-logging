@@ -71,6 +71,12 @@ int csi_push_measurement_v3(csi_ring_buffer_v3_t *rb,
   if (rb->metadata.granularity == CSI_GRAN_SUBCARRIER && 
       !csi_should_log_subcarrier_v3(rb, subcarrier_idx)) return 0;
   
+  // v3.1: ring full -> drop and count (no synchronous file write from the L1 thread)
+  if (rb->count >= CSI_RING_BUFFER_SIZE) {
+    rb->dropped++;
+    return 0;
+  }
+
   // Add to ring buffer
   uint32_t idx = rb->write_idx % CSI_RING_BUFFER_SIZE;
   
@@ -87,17 +93,38 @@ int csi_push_measurement_v3(csi_ring_buffer_v3_t *rb,
   rb->write_idx++;
   rb->count++;
   
-  // Auto-flush if buffer getting full
-  if (rb->count > CSI_RING_BUFFER_SIZE * 0.9) {
-    csi_ring_buffer_flush_v3(rb);
-  }
-  
   return 0;
 }
 
+/* v3.1: snapshot pending rows (caller holds the mutex) */
+uint32_t csi_ring_buffer_snapshot_v3(csi_ring_buffer_v3_t *rb, csi_measurement_v3_t *dst) {
+  uint32_t n = 0;
+  while (rb->read_idx < rb->write_idx) {
+    dst[n++] = rb->buffer[rb->read_idx % CSI_RING_BUFFER_SIZE];
+    rb->read_idx++;
+  }
+  rb->count = 0;
+  return n;
+}
+
 /* Flush ring buffer to CSV */
-int csi_ring_buffer_flush_v3(csi_ring_buffer_v3_t *rb) {
+static void csi_write_header_v3(csi_ring_buffer_v3_t *rb);
+
+/* v3.1: write header (once) then rows */
+int csi_write_rows_v3(csi_ring_buffer_v3_t *rb, const csi_measurement_v3_t *rows, uint32_t n) {
   if (!rb || !rb->csv_file) return -1;
+  csi_write_header_v3(rb);
+  for (uint32_t i = 0; i < n; i++) {
+    const csi_measurement_v3_t *m = &rows[i];
+    fprintf(rb->csv_file, "%u,%u,0x%04x,%u,%u,%u", m->frame, m->slot, m->rnti, m->ant_rx, m->port_tx, m->rb);
+    if (rb->metadata.granularity == CSI_GRAN_SUBCARRIER) fprintf(rb->csv_file, ",%u", m->subcarrier);
+    fprintf(rb->csv_file, ",%d,%d\n", m->real, m->imag);
+  }
+  fflush(rb->csv_file);
+  return 0;
+}
+
+static void csi_write_header_v3(csi_ring_buffer_v3_t *rb) {
   // Write header on first flush with actual nb_antenna_rx
   if (!rb->header_written && rb->metadata.include_header) {
     json_object *metadata = json_object_new_object();
@@ -154,7 +181,12 @@ int csi_ring_buffer_flush_v3(csi_ring_buffer_v3_t *rb) {
     json_object_put(metadata);
     rb->header_written = true;   /* v3.1: header written once (was reset to false -> repeated at every flush) */
   }
-  
+}
+
+/* Flush ring buffer to CSV (shutdown path, no concurrent pusher) */
+int csi_ring_buffer_flush_v3(csi_ring_buffer_v3_t *rb) {
+  if (!rb || !rb->csv_file) return -1;
+  csi_write_header_v3(rb);
   while (rb->read_idx < rb->write_idx) {
     uint32_t idx = rb->read_idx % CSI_RING_BUFFER_SIZE;
     csi_measurement_v3_t *m = &rb->buffer[idx];
