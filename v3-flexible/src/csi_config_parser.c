@@ -160,7 +160,7 @@ bool csi_should_log_antenna_v3(const csi_ring_buffer_v3_t *rb, uint8_t ant_rx) {
   if (!rb) return false;
 
   if (rb->metadata.num_antenna_indices == 0) {
-    return ant_rx < rb->metadata.nb_antenna_rx;
+    return true;  /* v3.1: "all" = every antenna of the SRS buffer (caller loops up to nb_antennas_rx) */
   }
 
   for (int i = 0; i < rb->metadata.num_antenna_indices; i++) {
