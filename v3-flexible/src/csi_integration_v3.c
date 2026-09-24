@@ -40,9 +40,10 @@ void* csi_flush_thread_func(void *arg) {
     if (rb->count > 0) {
       // Write timestamp before flushing data
       time_t now = time(NULL);
-      struct tm *tm_info = localtime(&now);
+      struct tm tm_utc;
+      gmtime_r(&now, &tm_utc);  /* v3.1: UTC (was pod local time) */
       char timestamp[32];
-      strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
+      strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &tm_utc);
       fprintf(rb->csv_file, "# TIMESTAMP: %s\n", timestamp);
       fflush(rb->csv_file);
       
@@ -100,13 +101,24 @@ void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx,
                                    uint8_t N_ap,
                                    uint8_t N_symb_SRS,
                                    uint16_t ofdm_symbol_size,
+                                   uint16_t first_carrier_offset,
                                    uint16_t bwp_start,
                                    uint16_t bwp_size,
-                                   const c16_t srs_estimated_channel_freq[][N_ap][ofdm_symbol_size * N_symb_SRS]) {
+                                   const void *srs_estimated_channel_freq_v) {
+  /* Same memory layout as OAI's VLA c16_t [nb_antennas_rx][N_ap][ofdm_symbol_size * N_symb_SRS] */
+  const c16_t (*srs_estimated_channel_freq)[N_ap][ofdm_symbol_size * N_symb_SRS] = srs_estimated_channel_freq_v;
+  /* Buffer index of carrier subcarrier 0 (DC-centred layout, cf. nr_srs_channel_estimation) */
+  const int32_t sc0 = (int32_t)first_carrier_offset - (int32_t)(ofdm_symbol_size / 2);
+  const uint32_t symb_len = ofdm_symbol_size;
   static int g_csi_lazy_init_done = 0;
   if (!g_csi_lazy_init_done) {
     const char *out_dir = getenv("CSI_OUTPUT_DIR") ?: "/data/csi";
-    nr_csi_logging_init_v3(NULL, nb_antennas_rx, 1, out_dir);
+    nr_csi_logging_init_v3(NULL, nb_antennas_rx, N_ap, out_dir);
+    g_csi_rb.metadata.ofdm_symbol_size = ofdm_symbol_size;
+    g_csi_rb.metadata.first_carrier_offset = first_carrier_offset;
+    g_csi_rb.metadata.bwp_start = bwp_start;
+    g_csi_rb.metadata.bwp_size = bwp_size;
+    g_csi_rb.metadata.nb_symb_srs = N_symb_SRS;
     g_csi_lazy_init_done = 1;
   }
 
@@ -114,7 +126,7 @@ void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx,
     return;
   }
 
-  uint8_t nb_ports_tx = (1 << N_ap);
+  const uint8_t nb_ports_tx = N_ap;  /* v3.1: N_ap is already the port count (was 1 << N_ap) */
 
   pthread_mutex_lock(&g_csi_flush_mutex);
 
@@ -133,18 +145,22 @@ void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx,
         if (g_csi_rb.metadata.granularity == CSI_GRAN_RB) {
           int32_t sum_real = 0;
           int32_t sum_imag = 0;
+          int32_t n_val = 0;
 
           for (int sc = 0; sc < 12; sc++) {
-            uint32_t freq_idx = (rb * 12 + sc) * N_symb_SRS;
-            if (freq_idx + N_symb_SRS <= ofdm_symbol_size * N_symb_SRS) {
-              c16_t val = srs_estimated_channel_freq[ant_rx][port_tx][freq_idx];
+            const int32_t k = sc0 + rb * 12 + sc;           /* v3.1: offset-corrected index */
+            if (k < 0 || k >= (int32_t)ofdm_symbol_size) continue;
+            for (int s = 0; s < N_symb_SRS; s++) {        /* v3.1: average over SRS symbols */
+              c16_t val = srs_estimated_channel_freq[ant_rx][port_tx][s * symb_len + k];
               sum_real += val.i;
               sum_imag += val.q;
+              n_val++;
             }
           }
+          if (n_val == 0) continue;
 
-          int16_t avg_real = (int16_t)(sum_real / 12);
-          int16_t avg_imag = (int16_t)(sum_imag / 12);
+          int16_t avg_real = (int16_t)(sum_real / n_val);
+          int16_t avg_imag = (int16_t)(sum_imag / n_val);
 
           csi_push_measurement_v3(&g_csi_rb,
                                    frame_rx, slot_rx, rnti,
@@ -158,9 +174,14 @@ void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx,
               continue;
             }
 
-            uint32_t freq_idx = (rb * 12 + sc) * N_symb_SRS;
-            if (freq_idx + N_symb_SRS <= ofdm_symbol_size * N_symb_SRS) {
-              c16_t val = srs_estimated_channel_freq[ant_rx][port_tx][freq_idx];
+            const int32_t k = sc0 + rb * 12 + sc;           /* v3.1: offset-corrected index */
+            if (k >= 0 && k < (int32_t)ofdm_symbol_size) {
+              int32_t sr = 0, si = 0;
+              for (int s = 0; s < N_symb_SRS; s++) {      /* v3.1: average over SRS symbols */
+                c16_t v = srs_estimated_channel_freq[ant_rx][port_tx][s * symb_len + k];
+                sr += v.i; si += v.q;
+              }
+              c16_t val = {.i = (int16_t)(sr / N_symb_SRS), .q = (int16_t)(si / N_symb_SRS)};
 
               csi_push_measurement_v3(&g_csi_rb,
                                        frame_rx, slot_rx, rnti,

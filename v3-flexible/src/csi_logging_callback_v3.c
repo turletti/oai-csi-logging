@@ -130,14 +130,29 @@ int csi_ring_buffer_flush_v3(csi_ring_buffer_v3_t *rb) {
     }
     json_object_object_add(metadata, "port_selection", port_arr);
     json_object_object_add(metadata, "subcarrier_sampling", json_object_new_int(rb->metadata.subcarrier_sampling));
+    /* v3.1: self-describing header */
+    json_object_object_add(metadata, "format_version", json_object_new_string("3.1"));
+    json_object_object_add(metadata, "ofdm_symbol_size", json_object_new_int(rb->metadata.ofdm_symbol_size));
+    json_object_object_add(metadata, "first_carrier_offset", json_object_new_int(rb->metadata.first_carrier_offset));
+    json_object_object_add(metadata, "bwp_start", json_object_new_int(rb->metadata.bwp_start));
+    json_object_object_add(metadata, "bwp_size", json_object_new_int(rb->metadata.bwp_size));
+    json_object_object_add(metadata, "nb_symb_srs", json_object_new_int(rb->metadata.nb_symb_srs));
+    json_object_object_add(metadata, "srs_symbols", json_object_new_string("averaged"));
+    json_object_object_add(metadata, "rb_index", json_object_new_string("carrier CRB (DC-centred buffer offset applied)"));
+    json_object_object_add(metadata, "timestamp",
+                           json_object_new_string("UTC, taken at flush time = end of the batch that follows the marker"));
+    json_object_object_add(metadata, "flush_period_s", json_object_new_int(5));
+    const bool sc_col = (rb->metadata.granularity == CSI_GRAN_SUBCARRIER);
+    const char *hdr = sc_col ? "frame,slot,rnti,ant_rx,port_tx,rb,sc,real,imag"
+                             : "frame,slot,rnti,ant_rx,port_tx,rb,real,imag";
+    json_object *cols = json_object_new_array();
+    char tmp[64]; strncpy(tmp, hdr, sizeof(tmp) - 1); tmp[sizeof(tmp) - 1] = 0;
+    for (char *t = strtok(tmp, ","); t; t = strtok(NULL, ",")) json_object_array_add(cols, json_object_new_string(t));
+    json_object_object_add(metadata, "columns", cols);
     fprintf(rb->csv_file, "# %s\n", json_object_to_json_string(metadata));
-    if (rb->metadata.nb_antenna_rx > 1 || rb->metadata.nb_ports_tx > 1) {
-      fprintf(rb->csv_file, "frame,slot,rnti,ant_rx,port_tx,rb,real,imag\n");
-    } else {
-      fprintf(rb->csv_file, "frame,slot,rnti,rb,real,imag\n");
-    }
+    fprintf(rb->csv_file, "%s\n", hdr);
     json_object_put(metadata);
-    rb->header_written = false;
+    rb->header_written = true;   /* v3.1: header written once (was reset to false -> repeated at every flush) */
   }
   
   while (rb->read_idx < rb->write_idx) {
@@ -146,10 +161,8 @@ int csi_ring_buffer_flush_v3(csi_ring_buffer_v3_t *rb) {
     
     fprintf(rb->csv_file, "%u,%u,0x%04x", m->frame, m->slot, m->rnti);
     
-    // MIMO columns
-    if (rb->metadata.nb_antenna_rx > 1 || rb->metadata.nb_ports_tx > 1) {
-      fprintf(rb->csv_file, ",%u,%u", m->ant_rx, m->port_tx);
-    }
+    // v3.1: antenna/port columns always present (matches the "columns" list of the JSON header)
+    fprintf(rb->csv_file, ",%u,%u", m->ant_rx, m->port_tx);
     
     fprintf(rb->csv_file, ",%u", m->rb);
     

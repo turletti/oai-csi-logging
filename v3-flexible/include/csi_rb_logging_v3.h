@@ -53,6 +53,12 @@ typedef struct {
   uint8_t port_indices[4];
   uint8_t subcarrier_sampling;
   bool include_header;
+  /* v3.1: SRS buffer geometry, written to the JSON header for traceability */
+  uint16_t ofdm_symbol_size;
+  uint16_t first_carrier_offset;
+  uint16_t bwp_start;
+  uint16_t bwp_size;
+  uint8_t nb_symb_srs;
 } csi_csv_metadata_v3_t;
 /* ============================================================
  * Ring Buffer
@@ -87,4 +93,15 @@ void csi_ring_buffer_free_v3(csi_ring_buffer_v3_t *rb);
 bool csi_should_log_antenna_v3(const csi_ring_buffer_v3_t *rb, uint8_t ant_rx);
 bool csi_should_log_port_v3(const csi_ring_buffer_v3_t *rb, uint8_t port_tx);
 bool csi_should_log_subcarrier_v3(const csi_ring_buffer_v3_t *rb, uint8_t sc);
+
+/* v3.1 entry point, called from nr_srs_rx_procedures() after the SRS channel estimation.
+ * srs_estimated_channel_freq points to OAI's c16_t [nb_antennas_rx][N_ap][ofdm_symbol_size * N_symb_SRS]
+ * array. N_ap is the number of SRS ports (already 1 << num_ant_ports in OAI).
+ * The buffer is DC-centred: subcarrier g of the carrier (g = 12*crb + sc) of SRS symbol s is at
+ * s*ofdm_symbol_size + (first_carrier_offset - ofdm_symbol_size/2) + g. */
+void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx, uint16_t slot_rx, uint16_t rnti,
+                                  uint8_t nb_antennas_rx, uint8_t N_ap, uint8_t N_symb_SRS,
+                                  uint16_t ofdm_symbol_size, uint16_t first_carrier_offset,
+                                  uint16_t bwp_start, uint16_t bwp_size,
+                                  const void *srs_estimated_channel_freq);
 #endif

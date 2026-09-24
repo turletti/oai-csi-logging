@@ -176,7 +176,7 @@ bool csi_should_log_port_v3(const csi_ring_buffer_v3_t *rb, uint8_t port_tx) {
   if (!rb) return false;
 
   if (rb->metadata.num_port_indices == 0) {
-    return port_tx < rb->metadata.nb_ports_tx;
+    return true;  /* v3.1: "all" = every SRS port (the caller loops up to N_ap) */
   }
 
   for (int i = 0; i < rb->metadata.num_port_indices; i++) {
