@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-CSI Visualizer v8.7 - VECTORIZED & ADAPTIVE
+CSI Visualizer v8.8 - VECTORIZED & ADAPTIVE
+v8.8: live mode: follows a CSV being appended (e.g. the copy made by 5g_ansible playbooks/csi_live.yml),
+      sliding window of complete flush batches, auto-refresh, selectable views; upload mode unchanged.
+      streamlit run streamlit_csi_visualizer_v8.8.py -- --live /path/csi_per_rb.csv [--window 120] [--refresh 10]
 v8.7: reads CSI logger v3.1 files (JSON "columns", offset-corrected RBs, UTC markers); v8.6 notes below
 v8.6 changes (validated on rfsim-9 and a 54M-row aw2s capture):
 - Timestamps: a "# TIMESTAMP" marker is written by the logger at FLUSH time, i.e. at the END of the
@@ -22,7 +25,8 @@ import streamlit as st
 
 import pandas as pd
 import numpy as np
-import json, io, calendar
+import json, io, calendar, os, re, sys, time, argparse, threading
+from collections import deque
 from datetime import datetime
 import matplotlib
 matplotlib.use('Agg')
@@ -31,7 +35,7 @@ from scipy.stats import gaussian_kde, mannwhitneyu
 import warnings
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="CSI Visualizer v8.7", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="CSI Visualizer v8.8", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
 # Units (CSI complex channel estimate, linear arbitrary units from raw I/Q)
 U_MAG = "Magnitude |H| (a.u.)"
@@ -72,8 +76,7 @@ class Numerology:
 FLUSH_PERIOD_S = 5.0
 TIME_LABEL = 'gNB local time'   # set to 'UTC' after parsing a logger v3.1 file
 
-@st.cache_data
-def parse_csi_streaming(content: bytes):
+def _parse_csi(content: bytes, verbose=True):
     # Takes raw bytes (not the UploadedFile): Streamlit hashes UploadedFile with its read position,
     # which read() changes -> unreliable cache key.
     buf = np.frombuffer(content, dtype=np.uint8)
@@ -130,7 +133,7 @@ def parse_csi_streaming(content: bytes):
              else ["frame","slot","rnti","ant","port","rb","real","imag"])
     dtypes = {"frame":np.int32,"slot":np.int16,"rb":np.int16,"real":np.float32,
               "imag":np.float32,"rnti":str,"ant":np.int8,"port":np.int8}
-    st.success(f"✅ Detected format: {'6-col (1 ant/port)' if is_6col else '8-col (multi ant/port)'}")
+    if verbose: st.success(f"✅ Detected format: {'6-col (1 ant/port)' if is_6col else '8-col (multi ant/port)'}")
 
     df = pd.read_csv(io.BytesIO(content), header=None, names=names, comment="#",
                      skiprows=is_header.nonzero()[0].tolist(),
@@ -169,7 +172,7 @@ def parse_csi_streaming(content: bytes):
         first_L[kk] = L[first_pos]; last_L[kk] = L[first_pos + cnt - 1]
         span = np.maximum(last_L[k] - first_L[k], 1)
         timestamps = t_start + (L - first_L[k]).astype(np.float64) / span * (t_end - t_start)
-        st.success(f"✅ Batch-window interpolation: {n:,} records, {len(marker_lines)} markers "
+        if verbose: st.success(f"✅ Batch-window interpolation: {n:,} records, {len(marker_lines)} markers "
                    f"({marker_ts[-1]-marker_ts[0]+FLUSH_PERIOD_S:.1f}s)")
     else:
         timestamps = np.arange(n, dtype=np.float64)
@@ -194,6 +197,149 @@ def parse_csi_streaming(content: bytes):
     return {'mags': mags, 'phases': phases, 'timestamps': timestamps, 'rbtis': rbtis,
             'ants': ants, 'ports': ports, 'rbs': rbs, 'frames': frames, 'slots': slots,
             'stats': stats, 'metadata': metadata}
+
+# Upload mode: cached on the file bytes. Live mode calls _parse_csi directly (new bytes at every refresh).
+parse_csi_streaming = st.cache_data(_parse_csi)
+
+# ===================== LIVE MODE =====================
+LIVE_INITIAL_BYTES = 64 << 20    # first open of a large file: start this far from its end
+LIVE_MAX_READ = 256 << 20        # max bytes read per poll
+LIVE_MAX_BYTES = 512 << 20       # memory cap of the sliding window
+_NON_ROW = re.compile(rb"^(?:[^0-9\n][^\n]*)?\n", re.M)   # any line that is not a data row
+
+class LiveTail:
+    """Follows a CSV that is being appended and keeps the complete flush batches (marker + rows)
+    of the last window_s seconds (marker time). A batch is complete when the next marker arrives,
+    so the view lags by up to one flush period. Restarts from scratch when the file shrinks or is
+    replaced (streamer reconnection, size cap) or when a new v3.1 JSON header follows data rows
+    (gNB restart: the logger truncates the file and writes the header again)."""
+
+    def __init__(self, path):
+        self.path = path
+        self.lock = threading.Lock()
+        self.resets = 0
+        self.dropped = 0
+        self._reset()
+
+    def _reset(self):
+        self.offset, self.ino, self.carry = 0, None, b""
+        self.json_hdr = self.col_hdr = None
+        self._clear_data()
+
+    def _clear_data(self):
+        self.batches = deque()      # (t_marker, marker_line, rows_bytes), complete batches
+        self.nbytes = 0
+        self.cur = None             # [t_marker, marker_line, [row segments]] batch being received
+        self.rows_seen = False
+
+    def _close_batch(self):
+        if self.cur is not None and self.cur[2]:
+            if not self.batches or self.cur[0] >= self.batches[-1][0]:
+                rows = b"".join(self.cur[2])
+                self.batches.append((self.cur[0], self.cur[1], rows))
+                self.nbytes += len(rows)
+        self.cur = None
+
+    def _line(self, line, header_only=False):
+        if line.startswith(b"# {"):
+            if self.json_hdr is None:
+                self.json_hdr = line
+            elif self.rows_seen and (b'"format_version"' in self.json_hdr or line != self.json_hdr):
+                # v3.1 writes its header once: a new one after data rows = gNB restart
+                keep = self.cur if (self.cur is not None and not self.cur[2]) else None
+                self._clear_data()
+                self.json_hdr, self.col_hdr, self.cur = line, None, keep
+                self.resets += 1
+        elif line.startswith(b"frame"):
+            if self.col_hdr is None:
+                self.col_hdr = line
+        elif header_only:
+            return
+        elif line.startswith(b"# TIMESTAMP:"):
+            self._close_batch()
+            try:
+                t = calendar.timegm(datetime.strptime(line[12:].strip().decode(), "%Y-%m-%d %H:%M:%S").timetuple())
+                self.cur = [t, line, []]
+            except Exception:
+                self.cur = None
+        elif line.startswith(b"# DROPPED:"):
+            try:
+                self.dropped += int(line.split(b":", 1)[1])
+            except ValueError:
+                pass
+
+    def _feed(self, block):
+        pos = 0
+        for m in _NON_ROW.finditer(block):
+            if m.start() > pos and self.cur is not None:
+                self.cur[2].append(block[pos:m.start()]); self.rows_seen = True
+            self._line(m.group(0))
+            pos = m.end()
+        if pos < len(block) and self.cur is not None:
+            self.cur[2].append(block[pos:]); self.rows_seen = True
+
+    def poll(self, window_s):
+        """Read what was appended since the last poll. False if the file does not exist."""
+        with self.lock:
+            try:
+                st_ = os.stat(self.path)
+            except OSError:
+                return False
+            if self.ino is not None and (st_.st_ino != self.ino or st_.st_size < self.offset):
+                self._reset(); self.resets += 1
+            if self.ino is None:
+                self.ino = st_.st_ino
+                if st_.st_size > LIVE_INITIAL_BYTES:
+                    # large file: headers from its top, data from its end (rows before the first
+                    # marker read are ignored, so starting mid-line is harmless)
+                    with open(self.path, "rb") as f:
+                        head = f.read(1 << 20)
+                    for l in head.split(b"\n")[:-1]:
+                        self._line(l + b"\n", header_only=True)
+                    self.offset = st_.st_size - LIVE_INITIAL_BYTES
+            n = min(st_.st_size - self.offset, LIVE_MAX_READ)
+            if n > 0:
+                with open(self.path, "rb") as f:
+                    f.seek(self.offset); buf = f.read(n)
+                self.offset += len(buf)
+                data = self.carry + buf
+                cut = data.rfind(b"\n") + 1
+                self.carry = data[cut:]
+                self._feed(data[:cut])
+            if self.batches:
+                t_last = self.batches[-1][0]
+                while self.batches and (self.batches[0][0] <= t_last - window_s or self.nbytes > LIVE_MAX_BYTES):
+                    self.nbytes -= len(self.batches.popleft()[2])
+            self.mtime = st_.st_mtime
+            return True
+
+    def key(self):
+        with self.lock:
+            return (self.resets, len(self.batches), self.batches[-1][0] if self.batches else None)
+
+    def snapshot(self):
+        """Bytes of a valid CSV (JSON header, column line, complete batches) + info."""
+        with self.lock:
+            parts = [h for h in (self.json_hdr, self.col_hdr) if h]
+            for _, marker, rows in self.batches:
+                parts.append(marker); parts.append(rows)
+            info = {"batches": len(self.batches), "bytes": self.nbytes, "resets": self.resets,
+                    "dropped": self.dropped,
+                    "t_first": self.batches[0][0] if self.batches else None,
+                    "t_last": self.batches[-1][0] if self.batches else None}
+            return b"".join(parts), info
+
+@st.cache_resource
+def _live_tail(path):
+    return LiveTail(path)
+
+def _cli_args():
+    # streamlit run streamlit_csi_visualizer_v8.8.py -- --live PATH --window S --refresh S
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--live", default="")
+    ap.add_argument("--window", type=int, default=120)
+    ap.add_argument("--refresh", type=int, default=10)
+    return ap.parse_known_args(sys.argv[1:])[0]
 
 def detect_gaps(timestamps, threshold_s=1.0):
     valid = ~np.isnan(timestamps)
@@ -578,7 +724,7 @@ def _fx(*eqs, note=None, analysis=None):
             st.markdown(analysis)
 
 # ===================== UI =====================
-st.markdown("# 📊 CSI Visualizer v8.7")
+st.markdown("# 📊 CSI Visualizer v8.8")
 st.markdown("**Vectorized · adaptive · time-binned heatmaps · std-based · per-slot+per-antenna heatmaps · formulas + analysis (EN)**")
 
 st.sidebar.header("⚙️ Configuration")
@@ -595,12 +741,65 @@ gb_nrb = st.sidebar.number_input("Carrier N_RB", min_value=0, max_value=275, val
 _gb_placeholder = st.sidebar.empty()
 st.sidebar.divider()
 
-uploaded_file = st.file_uploader("📂 Upload CSI CSV", type=['csv'])
-if uploaded_file is None:
-    st.info("Upload a CSI CSV file (6-col or 8-col format)"); st.stop()
+TAB_NAMES = ["📋 Summary","📈 Distribution","📊 Per-RB","🔥 Heatmap Mag","⏱️ Timeline","🔍 Phase Heat",
+    "📡 Multipath","🎯 MIMO","🎯 Slot Quality","⏱️ Slot Temporal","📍 Slot RB",
+    "📡 Antenna Diag","🔍 RB Noise","⏱️ Time Anomalies","🌀 Phase Analysis"]
+_args = _cli_args()
+st.sidebar.header("📡 Source")
+LIVE = st.sidebar.radio("Source", ["Upload file", "Live file"], index=1 if _args.live else 0,
+                        horizontal=True) == "Live file"
+if LIVE:
+    live_path = st.sidebar.text_input("CSV being written (path on this host)", value=_args.live)
+    live_window = st.sidebar.slider("Window (s)", 10, 900, min(max(_args.window, 10), 900), 10)
+    live_refresh = st.sidebar.slider("Refresh (s)", 2, 60, min(max(_args.refresh, 2), 60), 1)
+    live_auto = st.sidebar.checkbox("Auto-refresh", value=True)
+    live_views = st.sidebar.multiselect("Views", TAB_NAMES, default=["🔥 Heatmap Mag", "⏱️ Timeline"],
+                                        help="Every selected view is recomputed at each refresh")
+    st.sidebar.button("Refresh now")
+st.sidebar.divider()
 
-with st.spinner("⚡ Parsing (vectorized)..."):
-    parsed_data = parse_csi_streaming(uploaded_file.getvalue())
+if not LIVE:
+    uploaded_file = st.file_uploader("📂 Upload CSI CSV", type=['csv'])
+    if uploaded_file is None:
+        st.info("Upload a CSI CSV file (6-col or 8-col format)"); st.stop()
+
+    with st.spinner("⚡ Parsing (vectorized)..."):
+        parsed_data = parse_csi_streaming(uploaded_file.getvalue())
+        if parsed_data is None:
+            st.error("Parse failed - check CSV format"); st.stop()
+else:
+    if not live_path:
+        st.info("Enter the path of the CSV being written"); st.stop()
+    _tail = _live_tail(live_path)
+    _tail.poll(live_window)
+    st.session_state["live_key_shown"] = _tail.key()
+
+    # Status line refreshed every live_refresh s; a full rerun is triggered only when a new
+    # complete batch arrived (fragment runs do not block the widgets)
+    @st.fragment(run_every=float(live_refresh) if live_auto else None)
+    def _live_watch():
+        exists = _tail.poll(live_window)
+        k = _tail.key()
+        if k != st.session_state.get("live_key_shown"):
+            st.rerun()
+        if not exists:
+            st.warning(f"⏳ Waiting for {live_path}"); return
+        age = time.time() - getattr(_tail, "mtime", time.time())
+        last = datetime.utcfromtimestamp(k[2]).strftime('%H:%M:%S') if k[2] else "-"
+        msg = (f"🔴 Live · {live_path} · {k[1]} batches in window · last batch {last} (marker time) · "
+               f"file updated {age:.0f} s ago · restarts {k[0]}")
+        if age > 3 * FLUSH_PERIOD_S:
+            st.warning(msg + " — stream stalled?")
+        else:
+            st.caption(msg)
+    _live_watch()
+
+    content, live_info = _tail.snapshot()
+    if live_info["batches"] == 0:
+        st.info(f"Waiting for complete flush batches (the logger flushes every {FLUSH_PERIOD_S:.0f} s)"); st.stop()
+    if live_info["dropped"]:
+        st.warning(f"⚠️ {live_info['dropped']:,} rows dropped by the logger (ring buffer full) since the live view started")
+    parsed_data = _parse_csi(content, verbose=False)
     if parsed_data is None:
         st.error("Parse failed - check CSV format"); st.stop()
 
@@ -684,104 +883,121 @@ else:
 if len(mags_f) == 0:
     st.error("No data matches filters"); st.stop()
 
-tabs = st.tabs(["📋 Summary","📈 Distribution","📊 Per-RB","🔥 Heatmap Mag","⏱️ Timeline","🔍 Phase Heat",
-    "📡 Multipath","🎯 MIMO","🎯 Slot Quality","⏱️ Slot Temporal","📍 Slot RB",
-    "📡 Antenna Diag","🔍 RB Noise","⏱️ Time Anomalies","🌀 Phase Analysis"])
+# Live mode: only the selected views are computed (all tabs are rendered at every rerun)
+_shown = [i for i, n in enumerate(TAB_NAMES) if not LIVE or n in live_views]
+if not _shown:
+    st.info("Select at least one view in the sidebar"); st.stop()
+tabs = dict(zip(_shown, st.tabs([TAB_NAMES[i] for i in _shown])))
 
-with tabs[0]:
-    st.subheader("📋 Data Summary")
-    st.write(f"**Format:** {'6-col (1 ant/port)' if len(stats['ant_list'])==1 else '8-col (multi)'}")
-    st.write(f"**Records (filtered):** {len(mags_f):,}")
-    st.write(f"**Magnitude:** {np.mean(mags_f):.2f} ± {np.std(mags_f):.2f} a.u. (zeros kept)")
-    _fx(r"|H_i| = \sqrt{I_i^{\,2} + Q_i^{\,2}} \qquad \varphi_i = \operatorname{atan2}(Q_i,\ I_i)",
-        note="Raw complex CSI (I,Q) -> linear magnitude (arbitrary units) and phase (rad). "
-             "Zeros (real=imag=0) kept. Leading all-zero RBs = guard band read by the logger (index offset bug) unless the guard-band correction is set.",
-        analysis="**Purpose.** Entry view: amplitude |H| (link quality per subcarrier) and phase of the estimated channel. Leading all-zero RBs = guard band read by the logger (index offset bug) unless the guard-band correction is set.\n\n**Anomalies / health.** Check that the record count, duration and % of zeros match the expected scenario. A collapsing mean magnitude or an unexpected % of zeros points to a link, RF-gain or allocation problem.")
-with tabs[1]:
-    st.pyplot(plot_distribution(mags_f), width='stretch')
-    _fx(r"\mathrm{CDF}(x) = \frac{1}{N}\sum_{i=1}^{N}\mathbf{1}\!\left[\,|H_i| \le x\,\right]",
-        r"\hat f(x) = \frac{1}{N h}\sum_{i=1}^{N} K\!\left(\frac{x-|H_i|}{h}\right) \quad (\text{KDE, Gaussian kernel})",
-        note="Histogram, CDF (cumulative), boxplot (quartiles) and density + KDE of the magnitude.",
-        analysis="**Purpose.** Statistical shape of |H| over the whole run. A spike at 0 = guard band read by the logger (index offset bug) unless the guard-band correction is set; the main lobe = measured RBs. Mean < median reflects the pull from the zeros.\n\n**Anomalies / health.** Healthy channel = a clean, tight active lobe. A pronounced low tail = deep fades; a lobe that widens or shifts = changing conditions (cross-check with the Timeline). On the CDF, the initial plateau = fraction of zero values.")
-with tabs[2]:
-    st.pyplot(plot_per_rb(mags_f, rbs_f), width='stretch')
-    _fx(r"\mu_r = \frac{1}{N_r}\sum_{i\in r} |H_i| \qquad \sigma_r = \sqrt{\frac{1}{N_r}\sum_{i\in r}\bigl(|H_i|-\mu_r\bigr)^2}",
-        r"\text{Range}_r = \bigl[\min_{i\in r}|H_i|,\ \max_{i\in r}|H_i|\bigr]",
-        note="Mean / std / range per RB (frequency selectivity). Zeros included.",
-        analysis="**Purpose.** Channel frequency selectivity: mu_r is the frequency response, sigma_r the stability of each sub-band. Basis for understanding why some RBs carry throughput better.\n\n**Anomalies / health.** A fairly flat response = weakly selective channel (favourable). Localized dips in mu_r = frequency-fading notches; a high sigma_r on specific RBs = narrowband noise/interference. Leading RBs constantly at 0 = guard band read by the logger (index offset bug) unless the guard-band correction is set.")
-with tabs[3]:
-    st.pyplot(plot_heatmap_mag_with_time(mags_f, rbs_f, frames_f, ts_f, ants_f, hm_window, hm_per_ant, slots=slots_f), width='stretch')
-    _fx(r"b(t) = \left\lfloor t / W \right\rfloor \quad (W = \text{window, s})",
-        r"G(r,b) = \frac{1}{N_{r,b}}\!\!\sum_{\substack{i:\,rb_i=r\\ b(t_i)=b}}\!\! |H_i| \;,\qquad G(r,b)=\mathrm{NaN}\ \text{if}\ N_{r,b}=0",
-        note="Mean per cell (RB x time-bin), faceted per slot and per antenna. Slots are distinct TX "
-             "occasions and antennas can be very imbalanced; averaging either together makes the per-bin "
-             "mean wobble (spurious vertical bands that are really anti-correlated per-antenna power). Time-binning avoids frame resets.",
-        analysis="**Purpose.** The key view: joint frequency x time evolution of the channel, one panel per slot. Horizontal bands = frequency structure; variations along time = mobility / environment change. Ideal to tie a performance drop to a precise instant.\n\n**Anomalies / health.** Stable channel = regular colours over time within a panel. A sharp vertical break = regime change (handover, UE repositioning); dark columns = signal loss / measurement gap; a dead RB line = failing sub-band. NB: periodic vertical stripes that appear only when several slots are mixed are an aggregation artifact, not a channel effect — that is why the heatmap is split per slot.")
-with tabs[4]:
-    st.pyplot(plot_timeline(mags_f, phases_f, ts_f), width='stretch')
-    _fx(r"p_q(b) = Q_q\bigl\{\,|H_i| : b(t_i)=b\,\bigr\}, \quad q\in\{5,50,95\}",
-        r"S(f) = \bigl|\,\mathcal{F}\{\,p_{50}(b) - \overline{p_{50}}\,\}\,\bigr|",
-        note="Per-bin (10 s) percentile bands + spectrum of the median (uniform 10 s sampling -> correct Hz axis).",
-        analysis="**Purpose.** Overall temporal stability and periodicities. The p5-p95 bands = instantaneous spread; the spectrum of the median reveals cycles (mobility, antenna rotation, periodic interference).\n\n**Anomalies / health.** Tight bands and a flat median = stable channel. Widening bands or median jumps = instability; a sharp spectral peak = a periodic source (interference, traffic cycle) to investigate.")
-with tabs[5]:
-    st.pyplot(plot_heatmap_phase_with_time(phases_f, rbs_f, frames_f, ts_f, ants_f, hm_window, hm_per_ant, slots=slots_f), width='stretch')
-    _fx(r"G_\varphi(r,b) = \frac{1}{N_{r,b}}\!\!\sum_{\substack{i:\,rb_i=r\\ b(t_i)=b}}\!\! \varphi_i",
-        note="Arithmetic mean of the phase per RB x bin cell, faceted per slot. WARNING: phase is circular; "
-             "the arithmetic mean is only valid for small dispersions.",
-        analysis="**Purpose.** Phase structure in frequency x time (one panel per slot): informs on timing/delay and channel coherence.\n\n**Anomalies / health.** Phase rotating quickly over time = frequency error (CFO) or strong mobility; discontinuities = sync losses. WARNING: interpret with care (arithmetic mean of a circular quantity) and remember zero-valued RBs sit at phase 0.")
-with tabs[6]:
-    st.pyplot(plot_multipath(mags_f, phases_f, rbs_f), width='stretch')
-    _fx(r"\sigma^{\varphi}_r = \operatorname{std}\bigl\{\varphi_i : rb_i = r\bigr\} \ \text{(rad)}",
-        r"\text{RMS}_\varphi = \sqrt{\frac{1}{N_{rb}}\sum_r \bigl(\sigma^{\varphi}_r\bigr)^2}",
-        note="Per-RB phase spread and global RMS (indicator of delay spread / coherence).",
-        analysis="**Purpose.** Per-RB phase dispersion approximates delay spread / coherence bandwidth. Low dispersion = weakly dispersive channel (near-LOS); high = rich multipath -> reduced frequency coherence.\n\n**Anomalies / health.** A sudden rise of the spread or RMS = onset of reflections/multipath (can explain an MCS drop). Very uneven dispersion between neighbouring RBs = selective interference.")
-with tabs[7]:
-    st.pyplot(plot_mimo(mags_f, slots_f, ants_f, ports_f, stats), width='stretch')
-    _fx(r"\mu_g = \frac{1}{N_g}\sum_{i\in g} |H_i|, \qquad g \in \{\text{slot},\ \text{antenna},\ \text{port}\}",
-        note="Mean magnitude per slot (boxplot), per RX antenna and per TX port.",
-        analysis="**Purpose.** Branch comparison: balance across slots, RX antennas and TX ports. In multi-antenna, lets you check the symmetry of the RF chains.\n\n**Anomalies / health.** Antennas/ports at comparable levels = balanced chains. One clearly weaker antenna/port = RF imbalance, cabling, or mis-set gain; an atypical slot = scheduling/allocation issue.")
-with tabs[8]:
-    st.pyplot(plot_slot_signal_quality(mags_f, slots_f, stats), width='stretch')
-    _fx(r"\mathrm{CV} = \frac{\sigma}{\mu} \qquad \mathrm{PAPR} = \frac{\max_i |H_i|}{\mu}",
-        note="Distribution (violin), variability CV = sigma/mu (dimensionless), PAPR and CDF per slot.",
-        analysis="**Purpose.** Per-slot quality: CV measures relative stability, PAPR the dynamics, the CDF the spread. Useful to compare slots carrying different UEs/flows.\n\n**Anomalies / health.** Low CV and similar distributions = homogeneous, stable slots. A high CV on a slot = instability (interference, scheduling); an abnormal PAPR or a shifted CDF = behaviour to isolate.")
-with tabs[9]:
-    st.pyplot(plot_slot_temporal_stability(mags_f, slots_f, frames_f, ts_f, hm_window), width='stretch')
-    _fx(r"\mu_{s,b} = \frac{1}{N_{s,b}}\!\!\sum_{\substack{i:\,slot=s\\ b(t_i)=b}}\!\! |H_i|, \qquad \sigma_{s,b} = \sqrt{\tfrac{1}{N_{s,b}}\!\sum (|H_i|-\mu_{s,b})^2}",
-        r"\mathrm{CV}_s = \frac{\operatorname{nanstd}_b\!\left(\mu_{s,b}\right)}{\operatorname{nanmean}_b\!\left(\mu_{s,b}\right)}",
-        note="Per (slot, 10 s bin): mean and standard deviation - zeros kept. An empty bin -> NaN, "
-             "so it does NOT influence the other bins or the CV (nan-aware aggregation).",
-        analysis="**Purpose.** Per-slot temporal stability (mu, sigma per bin; CV of bin-means). This is the direct link to throughput/BLER: a slot whose mu drops or whose CV rises explains a degradation at a given instant.\n\n**Anomalies / health.** Flat curves and low CV = stable slot. A mu drop, a sigma spike or a high CV = an event to correlate with the logs. Gaps (empty bins) indicate partial slot coverage, without biasing the stats.")
-with tabs[10]:
-    st.pyplot(plot_slot_rb_pattern(mags_f, slots_f, rbs_f), width='stretch')
-    _fx(r"G(s,r) = \frac{1}{N_{s,r}}\!\!\sum_{\substack{i:\,slot=s\\ rb_i=r}}\!\! |H_i|",
-        r"\text{dead RB}: \ \mu_{s,r} \le Q_5\bigl\{|H|\bigr\}",
-        note="Magnitude pattern Slot x RB, mean/std per RB, and dead/weak RBs (<= 5th percentile).",
-        analysis="**Purpose.** Slot x RB magnitude pattern: crosses frequency structure with slot. Reveals which RBs carry signal per slot and detects dead RBs.\n\n**Anomalies / health.** An RB pattern consistent across slots = stable allocation. Unexpected dead RBs (<= p5) or a high std on some RBs = degraded/noisy sub-bands to watch.")
-with tabs[11]:
-    if len(np.unique(ants_f)) > 1:
-        st.pyplot(plot_antenna_comparison_diag(mags_f, ants_f), width='stretch')
-        _fx(r"U = \sum_{i}\sum_{j} S(x_i, y_j),\quad S=\begin{cases}1 & x_i>y_j\\ \tfrac12 & x_i=y_j\\ 0 & x_i<y_j\end{cases}",
-            note="Mann-Whitney U test between two antennas (distribution equality); p-value shown.",
-            analysis="**Purpose.** Statistical test (Mann-Whitney U) of distribution equality between two antennas: quantifies diversity or an imbalance.\n\n**Anomalies / health.** p >= 0.05 = statistically equivalent antennas (healthy diversity). Very low p + separated medians = one systematically weaker branch (RF/antenna fault) to fix.")
-    else:
-        st.info("Only one antenna in filtered data")
-with tabs[12]:
-    st.pyplot(plot_rb_noise_profile(mags_f, rbs_f, ants_f), width='stretch')
-    _fx(r"\text{ratio}_r = \frac{\sigma_r}{\mu_r} \qquad \text{anomaly threshold} = \overline{\sigma_r} + 2\,\operatorname{std}_r(\sigma_r)",
-        note="Per-RB standard deviation (noise), sigma/mu ratio, and anomaly detection beyond mean + 2 sigma.",
-        analysis="**Purpose.** Per-RB noise/variability profile: sigma_r and the sigma/mu ratio give the relative quality of each sub-band, independent of level.\n\n**Anomalies / health.** Uniform sigma and ratio = homogeneous noise. RBs beyond the threshold (red crosses) = noisy/interfered sub-bands; a localized high ratio = narrowband interference targeting those RBs.")
-with tabs[13]:
-    st.pyplot(plot_time_anomalies(mags_f, ts_f), width='stretch')
-    _fx(r"\mathrm{IQR} = Q_3 - Q_1",
-        r"\text{outlier}: \ |H_i| < Q_1 - 3\,\mathrm{IQR} \ \ \text{or} \ \ |H_i| > Q_3 + 3\,\mathrm{IQR}",
-        note="Outlier detection (IQR x3) + per-bin (10 s) mean +/- std band.",
-        analysis="**Purpose.** Detection of point events (IQR x3 outliers) and mean +/- sigma trend per bin. Spots glitches and drops over time.\n\n**Anomalies / health.** Few/no outliers and a stable mean band = nominal operation. Bursts of outliers = glitches/saturation; a drop of the band = level loss. WARNING: with many zeros (guard band), Q1 near 0 makes the IQR detector insensitive: cross-check with the heatmap.")
-with tabs[14]:
-    st.pyplot(plot_phase_analysis(phases_f, mags_f), width='stretch')
-    _fx(r"R = \left|\,\frac{1}{N}\sum_{i=1}^{N} e^{\,j\varphi_i}\,\right| \qquad \sigma_{\text{circ}} = \sqrt{-2\ln R}\ \ \text{(rad)}",
-        note="Mean resultant length R in [0,1] and circular standard deviation (replaces circular variance).",
-        analysis="**Purpose.** Global phase coherence: R close to 1 = concentrated phase (stable/LOS channel); low R = dispersed phase. sigma_circ complements the reading.\n\n**Anomalies / health.** High and stable R = good coherence. A drop of R = loss of coherence (CFO, mobility, noise). WARNING: the spike at 0 deg comes from zero-valued RBs (undefined phase rendered as 0): account for it in the interpretation.")
+if 0 in tabs:
+    with tabs[0]:
+        st.subheader("📋 Data Summary")
+        st.write(f"**Format:** {'6-col (1 ant/port)' if len(stats['ant_list'])==1 else '8-col (multi)'}")
+        st.write(f"**Records (filtered):** {len(mags_f):,}")
+        st.write(f"**Magnitude:** {np.mean(mags_f):.2f} ± {np.std(mags_f):.2f} a.u. (zeros kept)")
+        _fx(r"|H_i| = \sqrt{I_i^{\,2} + Q_i^{\,2}} \qquad \varphi_i = \operatorname{atan2}(Q_i,\ I_i)",
+            note="Raw complex CSI (I,Q) -> linear magnitude (arbitrary units) and phase (rad). "
+                 "Zeros (real=imag=0) kept. Leading all-zero RBs = guard band read by the logger (index offset bug) unless the guard-band correction is set.",
+            analysis="**Purpose.** Entry view: amplitude |H| (link quality per subcarrier) and phase of the estimated channel. Leading all-zero RBs = guard band read by the logger (index offset bug) unless the guard-band correction is set.\n\n**Anomalies / health.** Check that the record count, duration and % of zeros match the expected scenario. A collapsing mean magnitude or an unexpected % of zeros points to a link, RF-gain or allocation problem.")
+if 1 in tabs:
+    with tabs[1]:
+        st.pyplot(plot_distribution(mags_f), width='stretch')
+        _fx(r"\mathrm{CDF}(x) = \frac{1}{N}\sum_{i=1}^{N}\mathbf{1}\!\left[\,|H_i| \le x\,\right]",
+            r"\hat f(x) = \frac{1}{N h}\sum_{i=1}^{N} K\!\left(\frac{x-|H_i|}{h}\right) \quad (\text{KDE, Gaussian kernel})",
+            note="Histogram, CDF (cumulative), boxplot (quartiles) and density + KDE of the magnitude.",
+            analysis="**Purpose.** Statistical shape of |H| over the whole run. A spike at 0 = guard band read by the logger (index offset bug) unless the guard-band correction is set; the main lobe = measured RBs. Mean < median reflects the pull from the zeros.\n\n**Anomalies / health.** Healthy channel = a clean, tight active lobe. A pronounced low tail = deep fades; a lobe that widens or shifts = changing conditions (cross-check with the Timeline). On the CDF, the initial plateau = fraction of zero values.")
+if 2 in tabs:
+    with tabs[2]:
+        st.pyplot(plot_per_rb(mags_f, rbs_f), width='stretch')
+        _fx(r"\mu_r = \frac{1}{N_r}\sum_{i\in r} |H_i| \qquad \sigma_r = \sqrt{\frac{1}{N_r}\sum_{i\in r}\bigl(|H_i|-\mu_r\bigr)^2}",
+            r"\text{Range}_r = \bigl[\min_{i\in r}|H_i|,\ \max_{i\in r}|H_i|\bigr]",
+            note="Mean / std / range per RB (frequency selectivity). Zeros included.",
+            analysis="**Purpose.** Channel frequency selectivity: mu_r is the frequency response, sigma_r the stability of each sub-band. Basis for understanding why some RBs carry throughput better.\n\n**Anomalies / health.** A fairly flat response = weakly selective channel (favourable). Localized dips in mu_r = frequency-fading notches; a high sigma_r on specific RBs = narrowband noise/interference. Leading RBs constantly at 0 = guard band read by the logger (index offset bug) unless the guard-band correction is set.")
+if 3 in tabs:
+    with tabs[3]:
+        st.pyplot(plot_heatmap_mag_with_time(mags_f, rbs_f, frames_f, ts_f, ants_f, hm_window, hm_per_ant, slots=slots_f), width='stretch')
+        _fx(r"b(t) = \left\lfloor t / W \right\rfloor \quad (W = \text{window, s})",
+            r"G(r,b) = \frac{1}{N_{r,b}}\!\!\sum_{\substack{i:\,rb_i=r\\ b(t_i)=b}}\!\! |H_i| \;,\qquad G(r,b)=\mathrm{NaN}\ \text{if}\ N_{r,b}=0",
+            note="Mean per cell (RB x time-bin), faceted per slot and per antenna. Slots are distinct TX "
+                 "occasions and antennas can be very imbalanced; averaging either together makes the per-bin "
+                 "mean wobble (spurious vertical bands that are really anti-correlated per-antenna power). Time-binning avoids frame resets.",
+            analysis="**Purpose.** The key view: joint frequency x time evolution of the channel, one panel per slot. Horizontal bands = frequency structure; variations along time = mobility / environment change. Ideal to tie a performance drop to a precise instant.\n\n**Anomalies / health.** Stable channel = regular colours over time within a panel. A sharp vertical break = regime change (handover, UE repositioning); dark columns = signal loss / measurement gap; a dead RB line = failing sub-band. NB: periodic vertical stripes that appear only when several slots are mixed are an aggregation artifact, not a channel effect — that is why the heatmap is split per slot.")
+if 4 in tabs:
+    with tabs[4]:
+        st.pyplot(plot_timeline(mags_f, phases_f, ts_f), width='stretch')
+        _fx(r"p_q(b) = Q_q\bigl\{\,|H_i| : b(t_i)=b\,\bigr\}, \quad q\in\{5,50,95\}",
+            r"S(f) = \bigl|\,\mathcal{F}\{\,p_{50}(b) - \overline{p_{50}}\,\}\,\bigr|",
+            note="Per-bin (10 s) percentile bands + spectrum of the median (uniform 10 s sampling -> correct Hz axis).",
+            analysis="**Purpose.** Overall temporal stability and periodicities. The p5-p95 bands = instantaneous spread; the spectrum of the median reveals cycles (mobility, antenna rotation, periodic interference).\n\n**Anomalies / health.** Tight bands and a flat median = stable channel. Widening bands or median jumps = instability; a sharp spectral peak = a periodic source (interference, traffic cycle) to investigate.")
+if 5 in tabs:
+    with tabs[5]:
+        st.pyplot(plot_heatmap_phase_with_time(phases_f, rbs_f, frames_f, ts_f, ants_f, hm_window, hm_per_ant, slots=slots_f), width='stretch')
+        _fx(r"G_\varphi(r,b) = \frac{1}{N_{r,b}}\!\!\sum_{\substack{i:\,rb_i=r\\ b(t_i)=b}}\!\! \varphi_i",
+            note="Arithmetic mean of the phase per RB x bin cell, faceted per slot. WARNING: phase is circular; "
+                 "the arithmetic mean is only valid for small dispersions.",
+            analysis="**Purpose.** Phase structure in frequency x time (one panel per slot): informs on timing/delay and channel coherence.\n\n**Anomalies / health.** Phase rotating quickly over time = frequency error (CFO) or strong mobility; discontinuities = sync losses. WARNING: interpret with care (arithmetic mean of a circular quantity) and remember zero-valued RBs sit at phase 0.")
+if 6 in tabs:
+    with tabs[6]:
+        st.pyplot(plot_multipath(mags_f, phases_f, rbs_f), width='stretch')
+        _fx(r"\sigma^{\varphi}_r = \operatorname{std}\bigl\{\varphi_i : rb_i = r\bigr\} \ \text{(rad)}",
+            r"\text{RMS}_\varphi = \sqrt{\frac{1}{N_{rb}}\sum_r \bigl(\sigma^{\varphi}_r\bigr)^2}",
+            note="Per-RB phase spread and global RMS (indicator of delay spread / coherence).",
+            analysis="**Purpose.** Per-RB phase dispersion approximates delay spread / coherence bandwidth. Low dispersion = weakly dispersive channel (near-LOS); high = rich multipath -> reduced frequency coherence.\n\n**Anomalies / health.** A sudden rise of the spread or RMS = onset of reflections/multipath (can explain an MCS drop). Very uneven dispersion between neighbouring RBs = selective interference.")
+if 7 in tabs:
+    with tabs[7]:
+        st.pyplot(plot_mimo(mags_f, slots_f, ants_f, ports_f, stats), width='stretch')
+        _fx(r"\mu_g = \frac{1}{N_g}\sum_{i\in g} |H_i|, \qquad g \in \{\text{slot},\ \text{antenna},\ \text{port}\}",
+            note="Mean magnitude per slot (boxplot), per RX antenna and per TX port.",
+            analysis="**Purpose.** Branch comparison: balance across slots, RX antennas and TX ports. In multi-antenna, lets you check the symmetry of the RF chains.\n\n**Anomalies / health.** Antennas/ports at comparable levels = balanced chains. One clearly weaker antenna/port = RF imbalance, cabling, or mis-set gain; an atypical slot = scheduling/allocation issue.")
+if 8 in tabs:
+    with tabs[8]:
+        st.pyplot(plot_slot_signal_quality(mags_f, slots_f, stats), width='stretch')
+        _fx(r"\mathrm{CV} = \frac{\sigma}{\mu} \qquad \mathrm{PAPR} = \frac{\max_i |H_i|}{\mu}",
+            note="Distribution (violin), variability CV = sigma/mu (dimensionless), PAPR and CDF per slot.",
+            analysis="**Purpose.** Per-slot quality: CV measures relative stability, PAPR the dynamics, the CDF the spread. Useful to compare slots carrying different UEs/flows.\n\n**Anomalies / health.** Low CV and similar distributions = homogeneous, stable slots. A high CV on a slot = instability (interference, scheduling); an abnormal PAPR or a shifted CDF = behaviour to isolate.")
+if 9 in tabs:
+    with tabs[9]:
+        st.pyplot(plot_slot_temporal_stability(mags_f, slots_f, frames_f, ts_f, hm_window), width='stretch')
+        _fx(r"\mu_{s,b} = \frac{1}{N_{s,b}}\!\!\sum_{\substack{i:\,slot=s\\ b(t_i)=b}}\!\! |H_i|, \qquad \sigma_{s,b} = \sqrt{\tfrac{1}{N_{s,b}}\!\sum (|H_i|-\mu_{s,b})^2}",
+            r"\mathrm{CV}_s = \frac{\operatorname{nanstd}_b\!\left(\mu_{s,b}\right)}{\operatorname{nanmean}_b\!\left(\mu_{s,b}\right)}",
+            note="Per (slot, 10 s bin): mean and standard deviation - zeros kept. An empty bin -> NaN, "
+                 "so it does NOT influence the other bins or the CV (nan-aware aggregation).",
+            analysis="**Purpose.** Per-slot temporal stability (mu, sigma per bin; CV of bin-means). This is the direct link to throughput/BLER: a slot whose mu drops or whose CV rises explains a degradation at a given instant.\n\n**Anomalies / health.** Flat curves and low CV = stable slot. A mu drop, a sigma spike or a high CV = an event to correlate with the logs. Gaps (empty bins) indicate partial slot coverage, without biasing the stats.")
+if 10 in tabs:
+    with tabs[10]:
+        st.pyplot(plot_slot_rb_pattern(mags_f, slots_f, rbs_f), width='stretch')
+        _fx(r"G(s,r) = \frac{1}{N_{s,r}}\!\!\sum_{\substack{i:\,slot=s\\ rb_i=r}}\!\! |H_i|",
+            r"\text{dead RB}: \ \mu_{s,r} \le Q_5\bigl\{|H|\bigr\}",
+            note="Magnitude pattern Slot x RB, mean/std per RB, and dead/weak RBs (<= 5th percentile).",
+            analysis="**Purpose.** Slot x RB magnitude pattern: crosses frequency structure with slot. Reveals which RBs carry signal per slot and detects dead RBs.\n\n**Anomalies / health.** An RB pattern consistent across slots = stable allocation. Unexpected dead RBs (<= p5) or a high std on some RBs = degraded/noisy sub-bands to watch.")
+if 11 in tabs:
+    with tabs[11]:
+        if len(np.unique(ants_f)) > 1:
+            st.pyplot(plot_antenna_comparison_diag(mags_f, ants_f), width='stretch')
+            _fx(r"U = \sum_{i}\sum_{j} S(x_i, y_j),\quad S=\begin{cases}1 & x_i>y_j\\ \tfrac12 & x_i=y_j\\ 0 & x_i<y_j\end{cases}",
+                note="Mann-Whitney U test between two antennas (distribution equality); p-value shown.",
+                analysis="**Purpose.** Statistical test (Mann-Whitney U) of distribution equality between two antennas: quantifies diversity or an imbalance.\n\n**Anomalies / health.** p >= 0.05 = statistically equivalent antennas (healthy diversity). Very low p + separated medians = one systematically weaker branch (RF/antenna fault) to fix.")
+        else:
+            st.info("Only one antenna in filtered data")
+if 12 in tabs:
+    with tabs[12]:
+        st.pyplot(plot_rb_noise_profile(mags_f, rbs_f, ants_f), width='stretch')
+        _fx(r"\text{ratio}_r = \frac{\sigma_r}{\mu_r} \qquad \text{anomaly threshold} = \overline{\sigma_r} + 2\,\operatorname{std}_r(\sigma_r)",
+            note="Per-RB standard deviation (noise), sigma/mu ratio, and anomaly detection beyond mean + 2 sigma.",
+            analysis="**Purpose.** Per-RB noise/variability profile: sigma_r and the sigma/mu ratio give the relative quality of each sub-band, independent of level.\n\n**Anomalies / health.** Uniform sigma and ratio = homogeneous noise. RBs beyond the threshold (red crosses) = noisy/interfered sub-bands; a localized high ratio = narrowband interference targeting those RBs.")
+if 13 in tabs:
+    with tabs[13]:
+        st.pyplot(plot_time_anomalies(mags_f, ts_f), width='stretch')
+        _fx(r"\mathrm{IQR} = Q_3 - Q_1",
+            r"\text{outlier}: \ |H_i| < Q_1 - 3\,\mathrm{IQR} \ \ \text{or} \ \ |H_i| > Q_3 + 3\,\mathrm{IQR}",
+            note="Outlier detection (IQR x3) + per-bin (10 s) mean +/- std band.",
+            analysis="**Purpose.** Detection of point events (IQR x3 outliers) and mean +/- sigma trend per bin. Spots glitches and drops over time.\n\n**Anomalies / health.** Few/no outliers and a stable mean band = nominal operation. Bursts of outliers = glitches/saturation; a drop of the band = level loss. WARNING: with many zeros (guard band), Q1 near 0 makes the IQR detector insensitive: cross-check with the heatmap.")
+if 14 in tabs:
+    with tabs[14]:
+        st.pyplot(plot_phase_analysis(phases_f, mags_f), width='stretch')
+        _fx(r"R = \left|\,\frac{1}{N}\sum_{i=1}^{N} e^{\,j\varphi_i}\,\right| \qquad \sigma_{\text{circ}} = \sqrt{-2\ln R}\ \ \text{(rad)}",
+            note="Mean resultant length R in [0,1] and circular standard deviation (replaces circular variance).",
+            analysis="**Purpose.** Global phase coherence: R close to 1 = concentrated phase (stable/LOS channel); low R = dispersed phase. sigma_circ complements the reading.\n\n**Anomalies / health.** High and stable R = good coherence. A drop of R = loss of coherence (CFO, mobility, noise). WARNING: the spike at 0 deg comes from zero-valued RBs (undefined phase rendered as 0): account for it in the interpretation.")
 if gaps:
     st.divider(); st.subheader("⚠️ Gaps Detected"); st.dataframe(pd.DataFrame(gaps), width='stretch')
-st.markdown(f"**v8.7** | {len(mags_f):,} records | {'6-col' if len(stats['ant_list'])==1 else '8-col'} | vectorized ✅")
+st.markdown(f"**v8.8** | {len(mags_f):,} records | {'6-col' if len(stats['ant_list'])==1 else '8-col'} | vectorized ✅")

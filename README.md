@@ -5,7 +5,7 @@ computed by the PHY is written, per UE / RX antenna / SRS port / resource block,
 to a CSV file inside the gNB container. A Streamlit application is provided to
 analyse the CSV offline.
 
-Current version: **logger v3.1**, **visualizer v8.7**.
+Current version: **logger v3.1**, **visualizer v8.8**.
 
 ## Repository layout
 
@@ -114,12 +114,29 @@ Known defects, handled by visualizer v8.7 where possible:
 
 ```bash
 pip install -r visualizer/requirements.txt
-streamlit run visualizer/streamlit_csi_visualizer_v8.7.py --server.maxUploadSize 4000
+streamlit run visualizer/streamlit_csi_visualizer_v8.8.py --server.maxUploadSize 4000
 ```
 
 Upload a `csi_per_rb.csv` (v3 or v3.1). The whole file is loaded in memory:
 parsing takes about 160 bytes per row (measured), i.e. ~2 GB of RAM for 10 M rows
 plus the uploaded file itself.
+
+Live mode (v8.8) follows a CSV that is being appended, e.g. the copy made on the
+monitor node by `playbooks/csi_live.yml` of 5g_ansible:
+
+```bash
+streamlit run visualizer/streamlit_csi_visualizer_v8.8.py -- --live /path/csi_per_rb.csv --window 120 --refresh 10
+```
+
+- Only complete flush batches are shown (a batch is complete when the next marker
+  arrives): the view lags by up to one flush period (5 s).
+- Sliding window on the marker time (`--window`, also in the sidebar), memory capped at 512 MB.
+- A status line is refreshed every `--refresh` s without blocking the widgets; the page
+  is recomputed only when a new batch arrived. Only the views selected in the sidebar
+  are computed.
+- The window restarts when the file shrinks or is replaced, or when a new v3.1 JSON
+  header follows data rows (gNB restart).
+- A large existing file is read from its last 64 MB (headers from its top).
 
 ## Tests
 
@@ -134,6 +151,8 @@ cd v3-flexible/test && ./run_tests.sh      # needs gcc, json-c-devel/libjson-c-d
 - `test_latency`: worst logger call duration while the flush thread writes.
 
 ## Changelog
+
+- **visualizer v8.8** — Live mode (`--live PATH`); upload mode unchanged from v8.7.
 
 - **v3.1** — Offset-corrected RB index (`first_carrier_offset` passed by the call
   site); multi-symbol SRS; all SRS ports (`N_ap`, was `1 << N_ap`); `all` antennas =
