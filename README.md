@@ -21,6 +21,7 @@ Current version: **logger v3.1**, **visualizer v8.8**.
 | `docker/Dockerfile.gNB.csi.v3.rocky` | `oai-gnb-csi` image (rfsim / USRP) |
 | `docker/Dockerfile.gNB.aw2s.csi.v3.rocky` | `oai-gnb-aw2s-csi` image |
 | `visualizer/` | Streamlit analysis app + `requirements.txt` |
+| `tools/csi_diag.py` | Offline per-UE diagnosis of the frequency profile (level, tilt, ripple, delay, PDP) |
 
 The directory name `v3-flexible/` and the Dockerfile names are used as-is by the
 weekly GitLab CI (see below): do not rename them without updating the CI.
@@ -121,6 +122,17 @@ Upload a `csi_per_rb.csv` (v3 or v3.1). The whole file is loaded in memory:
 parsing takes about 160 bytes per row (measured), i.e. ~2 GB of RAM for 10 M rows
 plus the uploaded file itself.
 
+`subcarrier` granularity files (v3.1, `sc` column declared in the JSON `columns`) are
+accepted; v3 subcarrier files (column not declared) are still refused. A "Resolution"
+choice appears in the sidebar:
+- RB: each RB is the complex mean of its logged subcarriers; all views unchanged.
+- Subcarrier: frequency axis = `12*rb + sc`. Subcarriers that are not logged
+  (`CSI_SUBCARRIER_SAMPLING`, or the SRS comb in OCUDU files, which only carry the
+  pilots) are gaps in the profiles; the heatmaps show only the subcarriers with data,
+  with ticks giving the real `12*rb + sc` index.
+A subcarrier file has up to 12x the rows of an RB file: a warning is shown above 20 M rows.
+Files of the OCUDU logger (`"source": "ocudu-srs"`, float I/Q) are read the same way.
+
 Live mode (v8.8) follows a CSV that is being appended, e.g. the copy made on the
 monitor node by `playbooks/csi_live.yml` of 5g_ansible:
 
@@ -138,6 +150,18 @@ streamlit run visualizer/streamlit_csi_visualizer_v8.8.py -- --live /path/csi_pe
   header follows data rows (gNB restart).
 - A large existing file is read from its last 64 MB (headers from its top).
 
+## Offline diagnosis
+
+```bash
+python3 tools/csi_diag.py csi_per_rb.csv --out diag [--window t0:t1] [--min-occasions 50]
+```
+
+Per SRS occasion: level, tilt (dB/100 RB), ripple, group delay; per UE/antenna/port:
+medians, power delay profile, correlations of the dB profiles between UEs, tilt vs
+level and time. Writes `diag/summary.json`, `diag/occasions.csv.gz`,
+`diag/batch_profiles.npz`, `diag/diag.png` (and `window.png`). `subcarrier` files are
+first reduced to RBs (complex mean of the logged subcarriers of each RB).
+
 ## Tests
 
 ```bash
@@ -153,6 +177,9 @@ cd v3-flexible/test && ./run_tests.sh      # needs gcc, json-c-devel/libjson-c-d
 ## Changelog
 
 - **visualizer v8.8** — Live mode (`--live PATH`); upload mode unchanged from v8.7.
+  2026-10-05: `subcarrier` granularity (RB / subcarrier resolution), v3.1 detected by
+  `format_version` (OCUDU files), `boxplot(tick_labels=)` (matplotlib >= 3.9, `labels=`
+  was removed in 3.11); `tools/csi_diag.py` added.
 
 - **v3.1** — Offset-corrected RB index (`first_carrier_offset` passed by the call
   site); multi-symbol SRS; all SRS ports (`N_ap`, was `1 << N_ap`); `all` antennas =
