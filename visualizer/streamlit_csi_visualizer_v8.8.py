@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
 CSI Visualizer v8.8 - VECTORIZED & ADAPTIVE
+v8.8 (2026-10-05): "subcarrier" granularity of logger v3.1 (declared 9-column layout with "sc"): RB / subcarrier
+      frequency resolution in the sidebar (RB = complex mean of the logged subcarriers of the RB, subcarrier axis =
+      12*rb + sc); CSI_SUBCARRIER_SAMPLING and OCUDU pilot-only files (every comb-th subcarrier) leave gaps; v3.1
+      detected by "format_version" (OCUDU files have no first_carrier_offset).
+      boxplot(labels=) -> tick_labels= (labels removed in matplotlib 3.11; tick_labels needs >= 3.9).
 v8.8: live mode: follows a CSV being appended (e.g. the copy made by 5g_ansible playbooks/csi_live.yml),
       sliding window of complete flush batches, auto-refresh, selectable views; upload mode unchanged.
       streamlit run streamlit_csi_visualizer_v8.8.py -- --live /path/csi_per_rb.csv [--window 120] [--refresh 10]
@@ -40,6 +45,9 @@ st.set_page_config(page_title="CSI Visualizer v8.8", page_icon="📊", layout="w
 # Units (CSI complex channel estimate, linear arbitrary units from raw I/Q)
 U_MAG = "Magnitude |H| (a.u.)"
 U_STD = "Std Dev (a.u.)"
+FREQ_LABEL = 'RB index'      # 'Subcarrier index (12·rb + sc)' in subcarrier resolution
+FREQ_SC = False              # subcarrier resolution selected (heatmaps drop the frequency rows without data)
+SC_ROWS_WARN = 20_000_000    # subcarrier files: up to 12x the rows of an RB file
 _RNG = np.random.default_rng(0)
 RENDER_CAP = 40000   # max scatter points actually drawn
 
@@ -113,14 +121,20 @@ def _parse_csi(content: bytes, verbose=True):
     j = int(data_line_idx[0])
     ncols = len(content[starts[j]:ends[j]].decode().strip().split(','))
     is_6col = (ncols == 6)
-    # Guard: the v3 logger adds a subcarrier column in 'subcarrier' granularity without declaring it in
-    # the header, so the layout cannot be trusted -> refuse instead of silently misparsing.
-    if metadata.get('granularity', 'rb') != 'rb':
-        st.error(f"❌ granularity='{metadata.get('granularity')}' is not supported (only 'rb')"); return None
+    gran = metadata.get('granularity', 'rb')
+    per_sc = (gran == 'subcarrier')
+    if gran not in ('rb', 'subcarrier'):
+        st.error(f"❌ granularity='{gran}' is not supported ('rb' or 'subcarrier')"); return None
+    # Guard: the v3 logger (before v3.1) adds a subcarrier column in 'subcarrier' granularity without declaring
+    # it in the header, so the layout cannot be trusted -> only accept subcarrier files with a declared column list.
+    if per_sc and 'columns' not in metadata:
+        st.error("❌ granularity='subcarrier' without a JSON \"columns\" list (logger before v3.1): "
+                 "column layout cannot be trusted"); return None
     if 'columns' in metadata:  # logger v3.1: explicit column list
-        if list(metadata['columns']) not in (["frame","slot","rnti","rb","real","imag"],
-                                             ["frame","slot","rnti","ant_rx","port_tx","rb","real","imag"]):
-            st.error(f"❌ Unsupported column layout: {metadata['columns']}"); return None
+        layouts = ([["frame","slot","rnti","ant_rx","port_tx","rb","sc","real","imag"]] if per_sc else
+                   [["frame","slot","rnti","rb","real","imag"], ["frame","slot","rnti","ant_rx","port_tx","rb","real","imag"]])
+        if list(metadata['columns']) not in layouts:
+            st.error(f"❌ Unsupported column layout for granularity '{gran}': {metadata['columns']}"); return None
         if ncols != len(metadata['columns']):
             st.error(f"❌ {ncols} columns found, {len(metadata['columns'])} declared in the JSON metadata"); return None
     elif 'nb_antenna_rx' in metadata and 'nb_ports_tx' in metadata:
@@ -130,10 +144,11 @@ def _parse_csi(content: bytes, verbose=True):
     elif ncols not in (6, 8):
         st.error(f"❌ Unexpected column count: {ncols}"); return None
     names = (["frame","slot","rnti","rb","real","imag"] if is_6col
+             else ["frame","slot","rnti","ant","port","rb","sc","real","imag"] if per_sc
              else ["frame","slot","rnti","ant","port","rb","real","imag"])
     dtypes = {"frame":np.int32,"slot":np.int16,"rb":np.int16,"real":np.float32,
-              "imag":np.float32,"rnti":str,"ant":np.int8,"port":np.int8}
-    if verbose: st.success(f"✅ Detected format: {'6-col (1 ant/port)' if is_6col else '8-col (multi ant/port)'}")
+              "imag":np.float32,"rnti":str,"ant":np.int8,"port":np.int8,"sc":np.int16}
+    if verbose: st.success(f"✅ Detected format: {'6-col (1 ant/port)' if is_6col else '9-col (subcarrier, multi ant/port)' if per_sc else '8-col (multi ant/port)'}")
 
     df = pd.read_csv(io.BytesIO(content), header=None, names=names, comment="#",
                      skiprows=is_header.nonzero()[0].tolist(),
@@ -144,6 +159,9 @@ def _parse_csi(content: bytes, verbose=True):
     frames = df["frame"].to_numpy()
     slots  = df["slot"].to_numpy()
     rbs    = df["rb"].to_numpy()
+    scs    = df["sc"].to_numpy() if per_sc else None
+    if per_sc and len(scs) and (int(scs.min()) < 0 or int(scs.max()) > 11):
+        st.error(f"❌ sc outside 0..11 (min {int(scs.min())}, max {int(scs.max())})"); return None
     reals  = df["real"].to_numpy()
     imags  = df["imag"].to_numpy()
     n = len(df)
@@ -178,9 +196,37 @@ def _parse_csi(content: bytes, verbose=True):
         timestamps = np.arange(n, dtype=np.float64)
         st.warning("⚠️ No timestamps - sequential numbering")
 
+    cols = {'frames': frames, 'slots': slots, 'rbtis': rbtis, 'ants': ants, 'ports': ports,
+            'timestamps': timestamps}
+    if not per_sc:
+        return _build_view(cols, rbs, reals, imags, metadata)
+    # Subcarrier file: two views. RB view = complex mean of the logged subcarriers of each RB of each
+    # (occasion, antenna, port); the logger writes the subcarriers of an RB on consecutive rows.
+    n_sc_rows = n
+    new = np.ones(n, dtype=bool)
+    if n > 1:
+        new[1:] = ((rbs[1:] != rbs[:-1]) | (frames[1:] != frames[:-1]) | (slots[1:] != slots[:-1]) |
+                   (rbtis[1:] != rbtis[:-1]) | (ants[1:] != ants[:-1]) | (ports[1:] != ports[:-1]))
+    first = np.flatnonzero(new)
+    cnt = np.diff(np.append(first, n)).astype(np.float64)
+    rb_re = (np.add.reduceat(reals.astype(np.float64), first) / cnt).astype(np.float32)
+    rb_im = (np.add.reduceat(imags.astype(np.float64), first) / cnt).astype(np.float32)
+    rb_view = _build_view({k: v[first] for k, v in cols.items()}, rbs[first], rb_re, rb_im, metadata)
+    f_idx = (rbs.astype(np.int32) * 12 + scs).astype(np.int32)     # subcarrier axis: 12*rb + sc
+    sc_view = _build_view(cols, f_idx, reals, imags, metadata)
+    for v in (rb_view, sc_view):
+        v['stats']['sc_rows'] = n_sc_rows
+        v['stats']['sc_list'] = sorted(np.unique(scs).tolist())
+    rb_view['sc_view'] = sc_view
+    return rb_view
+
+def _build_view(cols, rbs, reals, imags, metadata):
+    """Magnitude / phase / stats of one frequency resolution (rbs = RB index, or 12*rb + sc)."""
+    n = len(rbs)
+    frames, slots, rbtis = cols['frames'], cols['slots'], cols['rbtis']
+    ants, ports, timestamps = cols['ants'], cols['ports'], cols['timestamps']
     mags = np.sqrt(reals*reals + imags*imags).astype(np.float32)
     phases = np.arctan2(imags, reals).astype(np.float32)
-    del reals, imags  # free I/Q (memory for large files)
 
     duration = float(timestamps.max() - timestamps.min()) if n > 1 else float(n)
     stats = {
@@ -376,6 +422,21 @@ def _timebin_grid(values, rbs, tsec, window, n_rb, n_bins):
     g[c == 0] = np.nan
     return g.reshape(n_rb, n_bins)
 
+def _compact_freq(grid, axis):
+    """Subcarrier resolution with subcarrier_sampling or SRS comb: most frequency indices hold no data, and the
+    empty rows wash out the image when it is downsampled for display. Keeps only the frequency indices with data
+    (image index i <-> frequency index idx[i]) when they are less than half of the axis; else returns idx None."""
+    other = 1 - axis
+    idx = np.flatnonzero(~np.all(np.isnan(grid), axis=other))
+    if FREQ_SC and len(idx) > 1 and len(idx) <= grid.shape[axis] // 2:
+        return np.take(grid, idx, axis=axis), idx
+    return grid, None
+
+def _freq_ticks(set_ticks, set_labels, idx):
+    """Ticks of a compacted frequency axis, labelled with the real frequency indices."""
+    pos = np.unique(np.linspace(0, len(idx) - 1, 7).round().astype(int))
+    set_ticks(pos); set_labels([str(int(idx[p])) for p in pos])
+
 # ===================== PLOTS =====================
 def plot_distribution(mags):
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -407,14 +468,14 @@ def plot_per_rb(mags, rbs):
     np.fmin.at(mins, rbs, mags); np.fmax.at(maxs, rbs, mags)
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     axes[0, 0].bar(x, mean, edgecolor='black', alpha=0.7, color='steelblue')
-    axes[0, 0].set_title('Mean / RB'); axes[0, 0].set_xlabel('RB index'); axes[0, 0].set_ylabel(U_MAG); axes[0, 0].grid(True, alpha=0.3, axis='y')
+    axes[0, 0].set_title('Mean / RB'); axes[0, 0].set_xlabel(FREQ_LABEL); axes[0, 0].set_ylabel(U_MAG); axes[0, 0].grid(True, alpha=0.3, axis='y')
     axes[0, 1].plot(x, std, 'o-', linewidth=2, markersize=4, color='steelblue')   # was Variance -> Std
-    axes[0, 1].set_title('Std Dev / RB'); axes[0, 1].set_xlabel('RB index'); axes[0, 1].set_ylabel(U_STD); axes[0, 1].grid(True, alpha=0.3)
+    axes[0, 1].set_title('Std Dev / RB'); axes[0, 1].set_xlabel(FREQ_LABEL); axes[0, 1].set_ylabel(U_STD); axes[0, 1].grid(True, alpha=0.3)
     axes[1, 0].errorbar(x, mean, yerr=std, fmt='o-', linewidth=2, markersize=4, color='steelblue', capsize=3, alpha=0.7)
-    axes[1, 0].set_title('Mean ± Std'); axes[1, 0].set_xlabel('RB index'); axes[1, 0].set_ylabel(U_MAG); axes[1, 0].grid(True, alpha=0.3)
+    axes[1, 0].set_title('Mean ± Std'); axes[1, 0].set_xlabel(FREQ_LABEL); axes[1, 0].set_ylabel(U_MAG); axes[1, 0].grid(True, alpha=0.3)
     axes[1, 1].fill_between(x, mins, maxs, alpha=0.3, color='steelblue', label='Range')
     axes[1, 1].plot(x, mean, 'o-', linewidth=2, color='steelblue', label='Mean')
-    axes[1, 1].set_title('Range / RB'); axes[1, 1].set_xlabel('RB index'); axes[1, 1].set_ylabel(U_MAG); axes[1, 1].legend(); axes[1, 1].grid(True, alpha=0.3)
+    axes[1, 1].set_title('Range / RB'); axes[1, 1].set_xlabel(FREQ_LABEL); axes[1, 1].set_ylabel(U_MAG); axes[1, 1].legend(); axes[1, 1].grid(True, alpha=0.3)
     plt.tight_layout(); return fig
 
 def _heatmap_facets(groups, values, rbs, tsec, t0, window, n_rb, n_bins, cmap, cbar_label, title_base):
@@ -423,9 +484,13 @@ def _heatmap_facets(groups, values, rbs, tsec, t0, window, n_rb, n_bins, cmap, c
     axs = axs[:, 0]
     for k, (label, mask) in enumerate(groups):
         grid = _timebin_grid(values[mask], rbs[mask], tsec[mask], window, n_rb, n_bins)
-        im = axs[k].imshow(grid, aspect='auto', cmap=cmap, origin='lower', extent=[0, n_bins*window, 0, n_rb])
+        grid, idx = _compact_freq(grid, 0)
+        y0, y1 = (-0.5, len(idx) - 0.5) if idx is not None else (0, n_rb)
+        im = axs[k].imshow(grid, aspect='auto', cmap=cmap, origin='lower', extent=[0, n_bins*window, y0, y1])
+        if idx is not None:
+            _freq_ticks(axs[k].set_yticks, axs[k].set_yticklabels, idx)
         axs[k].set_title(title_base + (f' — {label}' if label else ''))
-        axs[k].set_ylabel('RB index')
+        axs[k].set_ylabel(FREQ_LABEL)
         plt.colorbar(im, ax=axs[k], label=cbar_label)
     axs[-1].set_xlabel('Time (s from start)')
     ax2 = axs[0].twiny(); ax2.set_xlim(axs[0].get_xlim())
@@ -498,10 +563,10 @@ def plot_multipath(mags, phases, rbs):
     _, ph_std, _ = _grp_stats(phases, rbs, n_rb)             # phase std (rad) per RB
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     axes[0, 0].bar(x, ph_std, edgecolor='black', alpha=0.7, color='orange')
-    axes[0, 0].set_title('Phase Spread / RB'); axes[0, 0].set_xlabel('RB index'); axes[0, 0].set_ylabel('Std (rad)'); axes[0, 0].grid(True, alpha=0.3, axis='y')
+    axes[0, 0].set_title('Phase Spread / RB'); axes[0, 0].set_xlabel(FREQ_LABEL); axes[0, 0].set_ylabel('Std (rad)'); axes[0, 0].grid(True, alpha=0.3, axis='y')
     axes[0, 1].plot(x, mag_mean, 'o-', linewidth=2, markersize=4, color='steelblue')
     axes[0, 1].fill_between(x, mag_mean - mag_std, mag_mean + mag_std, alpha=0.2, color='steelblue')
-    axes[0, 1].set_title('Mean ± Std / RB (freq. selectivity)'); axes[0, 1].set_xlabel('RB index'); axes[0, 1].set_ylabel(U_MAG); axes[0, 1].grid(True, alpha=0.3)
+    axes[0, 1].set_title('Mean ± Std / RB (freq. selectivity)'); axes[0, 1].set_xlabel(FREQ_LABEL); axes[0, 1].set_ylabel(U_MAG); axes[0, 1].grid(True, alpha=0.3)
     axes[1, 0].axis('off'); axes[1, 0].text(0.5, 0.5, 'Multipath\nAnalysis', ha='center', va='center', fontsize=14, transform=axes[1, 0].transAxes)
     rms = np.sqrt(np.nanmean(ph_std**2))
     axes[1, 1].axis('off'); axes[1, 1].text(0.5, 0.5, f'RMS phase spread:\n{rms:.4f} rad', ha='center', va='center', fontsize=12, transform=axes[1, 1].transAxes)
@@ -514,7 +579,7 @@ def plot_mimo(mags, slots, ants, ports, stats):
     for s in sl:
         d = mags[slots == s]
         box.append(d[_sub(len(d))] if len(d) else np.array([np.nan]))
-    bp = axes[0, 0].boxplot(box, labels=[f'Slot {s}' for s in sl], patch_artist=True)
+    bp = axes[0, 0].boxplot(box, tick_labels=[f'Slot {s}' for s in sl], patch_artist=True)
     for p in bp['boxes']: p.set_facecolor('steelblue')
     axes[0, 0].set_title('Per Slot'); axes[0, 0].set_ylabel(U_MAG); axes[0, 0].grid(True, alpha=0.3, axis='y')
     al = stats['ant_list']
@@ -603,9 +668,12 @@ def plot_slot_rb_pattern(mags, slots, rbs):
         grid = (s/c).reshape(len(us), n_rb)
     grid[(c.reshape(len(us), n_rb)) == 0] = np.nan
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    im = axes[0, 0].imshow(grid, aspect='auto', cmap='viridis', origin='lower')
+    grid_img, idx = _compact_freq(grid, 1)
+    im = axes[0, 0].imshow(grid_img, aspect='auto', cmap='viridis', origin='lower')
+    if idx is not None:
+        _freq_ticks(axes[0, 0].set_xticks, axes[0, 0].set_xticklabels, idx)
     axes[0, 0].set_yticks(range(len(us))); axes[0, 0].set_yticklabels([f'Slot {ss}' for ss in us])
-    axes[0, 0].set_xlabel('RB index'); axes[0, 0].set_title('Magnitude Pattern: Slot × RB')
+    axes[0, 0].set_xlabel(FREQ_LABEL); axes[0, 0].set_title('Magnitude Pattern: Slot × RB')
     plt.colorbar(im, ax=axes[0, 0], label=U_MAG)
     x = np.arange(n_rb)
     means_all = {}
@@ -613,23 +681,23 @@ def plot_slot_rb_pattern(mags, slots, rbs):
         mean_s, std_s, _ = _grp_stats(mags[slots == ss], rbs[slots == ss], n_rb)
         means_all[ss] = (mean_s, std_s)
         axes[0, 1].plot(x, mean_s, 'o-', linewidth=1, markersize=3, label=f'Slot {ss}', alpha=0.7)
-    axes[0, 1].set_title('Mean Magnitude per RB'); axes[0, 1].set_xlabel('RB index'); axes[0, 1].set_ylabel(U_MAG); axes[0, 1].legend(); axes[0, 1].grid(True, alpha=0.3)
+    axes[0, 1].set_title('Mean Magnitude per RB'); axes[0, 1].set_xlabel(FREQ_LABEL); axes[0, 1].set_ylabel(U_MAG); axes[0, 1].legend(); axes[0, 1].grid(True, alpha=0.3)
     dead_thr = np.percentile(mags, 5)
     for ss in us:
         mean_s = means_all[ss][0]
         dead = x[np.nan_to_num(mean_s, nan=np.inf) <= dead_thr]
         if len(dead): axes[1, 0].scatter([ss]*len(dead), dead, s=40, alpha=0.7, label=f'Slot {ss}')
-    axes[1, 0].set_xlabel('Slot'); axes[1, 0].set_ylabel('RB index'); axes[1, 0].set_title(f'Dead/Weak RBs (≤ p5 = {dead_thr:.1f})'); axes[1, 0].grid(True, alpha=0.3)
+    axes[1, 0].set_xlabel('Slot'); axes[1, 0].set_ylabel(FREQ_LABEL); axes[1, 0].set_title(f'Dead/Weak RBs (≤ p5 = {dead_thr:.1f})'); axes[1, 0].grid(True, alpha=0.3)
     for ss in us:
         axes[1, 1].plot(x, means_all[ss][1], 'o-', linewidth=1, markersize=3, label=f'Slot {ss}', alpha=0.7)
-    axes[1, 1].set_title('RB Std Dev (noise)'); axes[1, 1].set_xlabel('RB index'); axes[1, 1].set_ylabel(U_STD); axes[1, 1].legend(); axes[1, 1].grid(True, alpha=0.3)
+    axes[1, 1].set_title('RB Std Dev (noise)'); axes[1, 1].set_xlabel(FREQ_LABEL); axes[1, 1].set_ylabel(U_STD); axes[1, 1].legend(); axes[1, 1].grid(True, alpha=0.3)
     plt.tight_layout(); return fig
 
 def plot_antenna_comparison_diag(mags, ants):
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
     ua = sorted(np.unique(ants).tolist())
     data = [mags[ants == a] for a in ua]
-    bp = axes[0].boxplot([d[_sub(len(d))] for d in data], labels=[f'Ant {a}' for a in ua], patch_artist=True)
+    bp = axes[0].boxplot([d[_sub(len(d))] for d in data], tick_labels=[f'Ant {a}' for a in ua], patch_artist=True)
     for p in bp['boxes']: p.set_facecolor('orange')
     axes[0].set_title('Magnitude by RX Antenna'); axes[0].set_ylabel(U_MAG); axes[0].grid(True, alpha=0.3, axis='y')
     if len(ua) >= 2:
@@ -646,23 +714,23 @@ def plot_rb_noise_profile(mags, rbs, ants):
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     axes[0, 0].plot(x, mean, 'o-', linewidth=1, markersize=4, color='steelblue')
     axes[0, 0].axhline(np.nanmean(mean), color='r', linestyle='--', label='Mean')
-    axes[0, 0].set_title('Mean Magnitude per RB'); axes[0, 0].set_xlabel('RB index'); axes[0, 0].set_ylabel(U_MAG); axes[0, 0].legend(); axes[0, 0].grid(True, alpha=0.3)
+    axes[0, 0].set_title('Mean Magnitude per RB'); axes[0, 0].set_xlabel(FREQ_LABEL); axes[0, 0].set_ylabel(U_MAG); axes[0, 0].legend(); axes[0, 0].grid(True, alpha=0.3)
     axes[0, 1].plot(x, std, 'o-', linewidth=1, markersize=4, color='orange')
     axes[0, 1].axhline(np.nanmean(std), color='r', linestyle='--', label='Mean')
     thr = np.nanmean(std) + 2*np.nanstd(std)
     axes[0, 1].axhline(thr, color='red', linestyle=':', label='Anomaly thr')
     noisy = x[np.nan_to_num(std) > thr]
     axes[0, 1].scatter(noisy, std[noisy], color='red', s=100, marker='x', label=f'Anomalies ({len(noisy)})')
-    axes[0, 1].set_title('Std Dev per RB (noise)'); axes[0, 1].set_xlabel('RB index'); axes[0, 1].set_ylabel(U_STD); axes[0, 1].legend(); axes[0, 1].grid(True, alpha=0.3)
+    axes[0, 1].set_title('Std Dev per RB (noise)'); axes[0, 1].set_xlabel(FREQ_LABEL); axes[0, 1].set_ylabel(U_STD); axes[0, 1].legend(); axes[0, 1].grid(True, alpha=0.3)
     for a in sorted(np.unique(ants).tolist()):
         mk = ants == a
         mean_a, _, _ = _grp_stats(mags[mk], rbs[mk], n_rb)
         axes[1, 0].plot(x, mean_a, 'o-', linewidth=1, markersize=3, label=f'Ant {a}', alpha=0.7)
-    axes[1, 0].set_title('Mean per RB (per Antenna)'); axes[1, 0].set_xlabel('RB index'); axes[1, 0].set_ylabel(U_MAG); axes[1, 0].legend(); axes[1, 0].grid(True, alpha=0.3)
+    axes[1, 0].set_title('Mean per RB (per Antenna)'); axes[1, 0].set_xlabel(FREQ_LABEL); axes[1, 0].set_ylabel(U_MAG); axes[1, 0].legend(); axes[1, 0].grid(True, alpha=0.3)
     ratio = std / (mean + 1e-6)
     axes[1, 1].plot(x, ratio, 'o-', linewidth=1, markersize=4, color='red')
     axes[1, 1].axhline(np.nanmean(ratio), color='blue', linestyle='--', label='Mean')
-    axes[1, 1].set_title('Noise Ratio (Std/Mean) per RB'); axes[1, 1].set_xlabel('RB index'); axes[1, 1].set_ylabel('Std/Mean (dimensionless)'); axes[1, 1].legend(); axes[1, 1].grid(True, alpha=0.3)
+    axes[1, 1].set_title('Noise Ratio (Std/Mean) per RB'); axes[1, 1].set_xlabel(FREQ_LABEL); axes[1, 1].set_ylabel('Std/Mean (dimensionless)'); axes[1, 1].legend(); axes[1, 1].grid(True, alpha=0.3)
     plt.tight_layout(); return fig
 
 def plot_time_anomalies(mags, timestamps):
@@ -803,9 +871,30 @@ else:
     if parsed_data is None:
         st.error("Parse failed - check CSV format"); st.stop()
 
-stats = parsed_data['stats']
 _meta = parsed_data.get('metadata', {})
-_v31 = 'first_carrier_offset' in _meta
+if parsed_data.get('sc_view') is not None:
+    # granularity 'subcarrier': the RB view (complex mean of the logged subcarriers) keeps every view unchanged
+    st.sidebar.header("📶 Frequency resolution")
+    _sc_stats = parsed_data['sc_view']['stats']
+    _res = st.sidebar.radio("Resolution", ["RB", "Subcarrier"], horizontal=True,
+                            help="RB: complex mean of the logged subcarriers of each RB. "
+                                 "Subcarrier: frequency axis = 12·rb + sc.")
+    st.sidebar.caption(f"Subcarrier file: {_sc_stats['sc_rows']:,} rows, sc logged {_sc_stats['sc_list']}, "
+                       f"subcarrier_sampling {_meta.get('subcarrier_sampling', '?')}"
+                       + (f", SRS comb {_meta['srs_comb']} (pilots only)" if 'srs_comb' in _meta else ""))
+    if _sc_stats['sc_rows'] > SC_ROWS_WARN:
+        st.warning(f"⚠️ {_sc_stats['sc_rows']:,} subcarrier rows: high memory use "
+                   f"(live mode: reduce the window)")
+    if _res == "Subcarrier":
+        parsed_data = parsed_data['sc_view']
+        FREQ_LABEL = 'Subcarrier index (12·rb + sc)'
+        FREQ_SC = True
+        if len(_sc_stats['sc_list']) < 12:
+            st.info("Subcarriers that are not logged (subcarrier_sampling, SRS comb) are gaps in the profiles; "
+                    "heatmaps show only the subcarriers with data (ticks = real 12·rb + sc indices).")
+stats = parsed_data['stats']
+# v3.1 files: RB indices already offset-corrected (OAI: first_carrier_offset; OCUDU: no DC-centred buffer)
+_v31 = 'first_carrier_offset' in _meta or str(_meta.get('format_version', '')) == '3.1'
 TIME_LABEL = 'UTC' if 'UTC' in str(_meta.get('timestamp', '')) else 'gNB local time'
 
 c = st.columns(5)
@@ -834,9 +923,10 @@ ports_int = [int(p.split()[1]) for p in ports_selected] if ports_selected else s
 rb_keep = np.ones(len(parsed_data['rbs']), dtype=bool)
 rbs_all = parsed_data['rbs']
 if _v31:
-    _gb_placeholder.info(f"Logger v3.1 file: RB indices already offset-corrected "
-                         f"(FFT {_meta.get('ofdm_symbol_size')}, first_carrier_offset {_meta.get('first_carrier_offset')}); "
-                         "guard-band inputs ignored")
+    _gb_placeholder.info("Logger v3.1 file: RB indices already offset-corrected "
+                         + (f"(FFT {_meta.get('ofdm_symbol_size')}, first_carrier_offset {_meta.get('first_carrier_offset')}); "
+                            if 'first_carrier_offset' in _meta else f"(source {_meta.get('source', '?')}); ")
+                         + "guard-band inputs ignored")
 elif gb_fft > 0 and gb_nrb > 0:
     off = gb_fft // 2 - 6 * gb_nrb
     if off < 0:
@@ -892,7 +982,8 @@ tabs = dict(zip(_shown, st.tabs([TAB_NAMES[i] for i in _shown])))
 if 0 in tabs:
     with tabs[0]:
         st.subheader("📋 Data Summary")
-        st.write(f"**Format:** {'6-col (1 ant/port)' if len(stats['ant_list'])==1 else '8-col (multi)'}")
+        st.write(f"**Format:** {'6-col (1 ant/port)' if len(stats['ant_list'])==1 else '8-col (multi)'}"
+                 f" · granularity {_meta.get('granularity', 'rb')} · frequency axis: {FREQ_LABEL}")
         st.write(f"**Records (filtered):** {len(mags_f):,}")
         st.write(f"**Magnitude:** {np.mean(mags_f):.2f} ± {np.std(mags_f):.2f} a.u. (zeros kept)")
         _fx(r"|H_i| = \sqrt{I_i^{\,2} + Q_i^{\,2}} \qquad \varphi_i = \operatorname{atan2}(Q_i,\ I_i)",
