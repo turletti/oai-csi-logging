@@ -96,13 +96,15 @@ int csi_push_measurement_v3(csi_ring_buffer_v3_t *rb,
   return 0;
 }
 
-/* v3.1: snapshot pending rows (caller holds the mutex) */
-uint32_t csi_ring_buffer_snapshot_v3(csi_ring_buffer_v3_t *rb, csi_measurement_v3_t *dst) {
-  uint32_t n = 0;
-  while (rb->read_idx < rb->write_idx) {
-    dst[n++] = rb->buffer[rb->read_idx % CSI_RING_BUFFER_SIZE];
-    rb->read_idx++;
-  }
+/* v3.2: snapshot pending rows by swapping buffers (caller holds the mutex). The ring restarts at index 0
+ * after every snapshot, so the pending rows are buffer[0, count): no copy while the L1 thread may wait. */
+uint32_t csi_ring_buffer_snapshot_v3(csi_ring_buffer_v3_t *rb, csi_measurement_v3_t **spare) {
+  uint32_t n = rb->write_idx - rb->read_idx;
+  csi_measurement_v3_t *rows = rb->buffer;
+  rb->buffer = *spare;
+  *spare = rows;
+  rb->write_idx = 0;
+  rb->read_idx = 0;
   rb->count = 0;
   return n;
 }

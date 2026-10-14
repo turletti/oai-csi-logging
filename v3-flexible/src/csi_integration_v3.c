@@ -31,11 +31,15 @@ void* csi_flush_thread_func(void *arg) {
   cpu_set_t cpuset;
   CPU_ZERO(&cpuset);
   CPU_SET(core_id, &cpuset);
-  pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-  fprintf(stderr, "[CSI] Flush thread pinned to core %d\n", core_id);
+  int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+  if (rc == 0)
+    fprintf(stderr, "[CSI] Flush thread pinned to core %d\n", core_id);
+  else  /* e.g. core outside the container cpuset: the thread keeps the affinity it inherited */
+    fprintf(stderr, "[CSI] WARNING: cannot pin the flush thread to core %d (error %d), not pinned\n", core_id, rc);
 
   csi_ring_buffer_v3_t *rb = (csi_ring_buffer_v3_t *)arg;
-  /* v3.1: private copy so that the file is written without holding the mutex shared with L1 */
+  /* Spare buffer swapped with the ring at each flush (O(1) under the mutex shared with L1); the file is
+   * written from it without holding the mutex */
   csi_measurement_v3_t *snap = malloc(CSI_RING_BUFFER_SIZE * sizeof(*snap));
   if (!snap) {
     fprintf(stderr, "[CSI] ERROR: cannot allocate flush buffer, flush thread disabled\n");
@@ -52,7 +56,7 @@ void* csi_flush_thread_func(void *arg) {
       struct tm tm_utc;
       gmtime_r(&now, &tm_utc);  /* UTC, taken at snapshot = end of the batch */
       strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &tm_utc);
-      n = csi_ring_buffer_snapshot_v3(rb, snap);
+      n = csi_ring_buffer_snapshot_v3(rb, &snap);
       dropped = rb->dropped;
       rb->dropped = 0;
     }
@@ -96,6 +100,13 @@ int nr_csi_logging_init_v3(const char *config_str,
   g_csi_enabled = 1;
 
   g_csi_flush_stop = 0;
+  /* Priority inheritance: if the (non real-time) flush thread is preempted while it holds the mutex,
+   * an L1 thread waiting for it lends it its priority instead of waiting for the preempting thread */
+  pthread_mutexattr_t attr;
+  pthread_mutexattr_init(&attr);
+  pthread_mutexattr_setprotocol(&attr, PTHREAD_PRIO_INHERIT);
+  pthread_mutex_init(&g_csi_flush_mutex, &attr);
+  pthread_mutexattr_destroy(&attr);
   pthread_create(&g_csi_flush_thread, NULL, csi_flush_thread_func, &g_csi_rb);
 
   printf("[CSI] Initialized v3 logging\n");

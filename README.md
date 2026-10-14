@@ -20,6 +20,8 @@ Current version: **logger v3.1**, **visualizer v8.8**.
 | `docker/Dockerfile.build.csi.v3.rocky` | `ran-build-csi` image: patches + builds OAI with the logger |
 | `docker/Dockerfile.gNB.csi.v3.rocky` | `oai-gnb-csi` image (rfsim / USRP) |
 | `docker/Dockerfile.gNB.aw2s.csi.v3.rocky` | `oai-gnb-aw2s-csi` image |
+| `docker/Dockerfile.build.fhi72.csi.v3.rocky` | `ran-build-fhi72-csi` image: `ran-build-fhi72` + logger, gNB rebuilt with the 7.2 transport |
+| `docker/Dockerfile.gNB.fhi72.csi.v3.rocky` | `oai-gnb-fhi72-csi` image (7.2 fronthaul, Benetel RUs) |
 | `visualizer/` | Streamlit analysis app + `requirements.txt` |
 | `tools/csi_diag.py` | Offline per-UE diagnosis of the frequency profile (level, tilt, ripple, delay, PDP) |
 
@@ -35,12 +37,21 @@ this repository:
 cp oai-csi-logging/docker/Dockerfile.build.csi.v3.rocky      docker/Dockerfile.build.csi.rocky
 cp oai-csi-logging/docker/Dockerfile.gNB.csi.v3.rocky        docker/Dockerfile.gNB.csi.rocky
 cp oai-csi-logging/docker/Dockerfile.gNB.aw2s.csi.v3.rocky   docker/Dockerfile.gNB.aw2s.csi.rocky
+cp oai-csi-logging/docker/Dockerfile.build.fhi72.csi.v3.rocky docker/Dockerfile.build.fhi72.csi.rocky
+cp oai-csi-logging/docker/Dockerfile.gNB.fhi72.csi.v3.rocky   docker/Dockerfile.gNB.fhi72.csi.rocky
 cp -r oai-csi-logging/v3-flexible .
 cp oai-csi-logging/v3-flexible/{patch_srs_ul_v3.sh,apply_csi_v3_cmake.sh,patch_csi_init_main_v3.sh,patch_oai_yaml_int8.sh} .
 docker build --target ran-build-csi    --tag ran-build-csi:latest       --file docker/Dockerfile.build.csi.rocky .
 docker build --target oai-gnb-csi      --tag oai-gnb-csi:$RAN_TAG       --file docker/Dockerfile.gNB.csi.rocky .
 docker build --target oai-gnb-aw2s-csi --tag oai-gnb-aw2s-csi:$RAN_TAG  --file docker/Dockerfile.gNB.aw2s.csi.rocky .
+# 7.2 fronthaul: after the ran-build-fhi72 image of the oai-gnb-fhi72 job (same DPDK / xran)
+docker build --target ran-build-fhi72-csi --tag ran-build-fhi72-csi:latest     --file docker/Dockerfile.build.fhi72.csi.rocky .
+docker build --target oai-gnb-fhi72-csi   --tag oai-gnb-fhi72-csi:$RAN_TAG     --file docker/Dockerfile.gNB.fhi72.csi.rocky .
 ```
+
+`Dockerfile.build.fhi72.csi.v3.rocky` starts from `ran-build-fhi72:latest`, so it must
+run after the job that builds it; pass `--build-arg XRAN_LOCATION=...` if libxran is
+not in `/opt/phy/fhi_lib/lib` there.
 
 `Dockerfile.build.csi.v3.rocky` builds the library, copies the sources into
 `openair1/PHY/NR_ESTIMATION/csi_v3_support/`, applies the patch scripts (each one
@@ -54,8 +65,10 @@ w38. Run-time validation must be redone on the testbed for each new tag.
 
 The `-csi` images are selected by `oai5g-rru` when `CSI_ENABLED=true`
 (`ansible-playbook ... -e csi_logger_enabled=true` in `5g_ansible`), which also
-forces `do_SRS: periodic` and `do_CSIRS: 1` in the gNB configuration. The logger
-starts at the first SRS it receives. Environment variables read by the logger:
+forces `do_SRS: periodic` and `do_CSIRS: 1` in the gNB configuration. With Benetel
+RUs (`benetel1`, `benetel2`), the `oai-gnb-fhi72-csi` image is used and the
+`oai-gnb-fhi-72` / `oai-du-fhi-72` charts set the variables below (`csi:` section of
+their values). The logger starts at the first SRS it receives. Environment variables read by the logger:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -64,7 +77,7 @@ starts at the first SRS it receives. Environment variables read by the logger:
 | `CSI_ANTENNA_SELECTION` | `all` | `all` or a comma list of RX antenna indices, e.g. `0,1` |
 | `CSI_PORT_SELECTION` | `all` | `all` or a comma list of SRS port indices |
 | `CSI_SUBCARRIER_SAMPLING` | `1` | Keep 1 subcarrier out of N (`subcarrier` granularity only) |
-| `CSI_FLUSH_CORE` | `32` | CPU core the flush thread is pinned to |
+| `CSI_FLUSH_CORE` | `32` | CPU core the flush thread is pinned to; it must belong to the container cpuset, otherwise the thread is not pinned (warning in the gNB log). The fhi-72 charts accept `auto` = last CPU of the cpuset |
 | `CSI_INCLUDE_HEADER` | `true` | Write the JSON + column header |
 
 ## CSV format (v3.1)
@@ -172,9 +185,17 @@ cd v3-flexible/test && ./run_tests.sh      # needs gcc, json-c-devel/libjson-c-d
   row must carry the value of its RB/antenna/port (ASan/UBSan).
 - `test_oai_copy`: buffer built with the verbatim OAI w37/w38 copy code, non-zero
   `bwp_start` and comb offset.
-- `test_latency`: worst logger call duration while the flush thread writes.
+- `test_latency`: worst logger call duration while the flush thread writes
+  (aw2s-like by default; Benetel-like 100 MHz 4T4R with
+  `-DNRB=273 -DNANT=4 -DFFT=4096`).
 
 ## Changelog
+
+- **v3.1.1** (2026-10-14) — Same CSV format (3.1). The flush thread swaps buffers with
+  the ring instead of copying the rows under the mutex shared with L1: the v3.1 copy
+  was O(rows) and blocked the L1 thread up to 43 ms at Benetel scale (4 antennas x
+  273 RB, `test_latency`), 0.3 ms at aw2s scale. Priority-inheritance mutex; warning
+  when the flush thread cannot be pinned. Images for the 7.2 fronthaul (Benetel RUs).
 
 - **visualizer v8.8** — Live mode (`--live PATH`); upload mode unchanged from v8.7.
   2026-10-05: `subcarrier` granularity (RB / subcarrier resolution), v3.1 detected by

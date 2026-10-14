@@ -1,0 +1,112 @@
+#
+# Dockerfile for the OAI BUILD service with CSI v3 LOGGING, 7.2 fronthaul (Benetel RUs)
+#   Valid for Rocky 9
+#
+# Starts from ran-build-fhi72, i.e. the image that the weekly CI already builds for
+# oai-gnb-fhi72 (OAI tree + DPDK + libxran + OAI built with -t oran_fhlib_5g), so that
+# the -csi image uses exactly the same DPDK / xran versions as the image without CSI.
+# The CSI steps are the same as in Dockerfile.build.csi.v3.rocky; only the final
+# build command differs (gNB with the oran_fhlib_5g transport).
+#
+# Build context: the OAI tree prepared by the CI, with v3-flexible/ and the four
+# patch scripts copied at its root (see README).
+
+# STAGE 1: Build libcsi_logging_v3 library (self-contained)
+FROM ran-base:latest AS csi-v3-builder
+RUN dnf install -y dnf-plugins-core && \
+    dnf config-manager --set-enabled crb && \
+    dnf install -y json-c-devel pkg-config && dnf clean all
+
+WORKDIR /tmp/csi-v3
+COPY v3-flexible .
+
+RUN mkdir -p build && cd build && \
+    source /opt/rh/gcc-toolset-13/enable && \
+    cmake .. && make && make install && ldconfig && \
+    echo "✅ libcsi_logging_v3.a built and installed"
+
+RUN test -f /usr/local/lib/libcsi_logging_v3.a || (echo "❌ libcsi_logging_v3.a not found" && exit 1)
+RUN test -f /usr/local/include/csi_rb_logging_v3.h || (echo "❌ csi_rb_logging_v3.h not found" && exit 1)
+
+# ============================================================================
+# STAGE 2: OAI 7.2 build tree + CSI v3 integration
+# ============================================================================
+FROM ran-build-fhi72:latest AS ran-build-fhi72-csi
+ARG E2AP_VERSION=E2AP_V3
+ARG KPM_VERSION=KPM_V3_00
+# Must match the xran location of ran-build-fhi72 (OAI Dockerfile.build.fhi72.*)
+ARG XRAN_LOCATION=/opt/phy/fhi_lib/lib
+
+RUN dnf install -y dnf-plugins-core && \
+    dnf config-manager --set-enabled crb && \
+    dnf install -y json-c-devel pkg-config gcc-toolset-13 gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils && \
+    dnf clean all
+
+COPY --from=csi-v3-builder /usr/local/lib/libcsi_logging_v3.a /usr/local/lib/
+COPY --from=csi-v3-builder /usr/local/include/csi_rb_logging_v3.h /usr/local/include/
+RUN test -f /usr/local/lib/libcsi_logging_v3.a || (echo "❌ libcsi_logging_v3.a not copied" && exit 1)
+
+# The OAI sources of ran-build-fhi72 are in /oai-ran; add the CSI files explicitly
+# (ran-build-fhi72 may have been built from a context without them)
+WORKDIR /oai-ran
+COPY v3-flexible ./v3-flexible
+COPY patch_srs_ul_v3.sh patch_csi_init_main_v3.sh patch_oai_yaml_int8.sh apply_csi_v3_cmake.sh ./
+
+# STEP 1: CSI v3 sources in the OAI tree
+RUN mkdir -p openair1/PHY/NR_ESTIMATION/csi_v3_support && \
+    cp v3-flexible/src/csi_integration_v3.c openair1/PHY/NR_ESTIMATION/csi_v3_support/ && \
+    cp v3-flexible/src/csi_logging_callback_v3.c openair1/PHY/NR_ESTIMATION/csi_v3_support/ && \
+    cp v3-flexible/src/csi_config_parser.c openair1/PHY/NR_ESTIMATION/csi_v3_support/ && \
+    cp v3-flexible/include/csi_rb_logging_v3.h openair1/PHY/NR_ESTIMATION/csi_v3_support/ && \
+    echo "✅ CSI v3 sources copied to csi_v3_support/"
+
+# STEP 2: CSI v3 patches (textual anchors + verify)
+RUN export OAI_DIR=/oai-ran && \
+    bash patch_srs_ul_v3.sh && \
+    bash patch_csi_init_main_v3.sh && \
+    grep -q "nr_srs_csi_logging_invoke_v3" /oai-ran/openair1/SCHED_NR/phy_procedures_nr_gNB.c || \
+    (echo "❌ PATCH VERIFICATION FAILED: nr_srs_csi_logging_invoke_v3 not found" && exit 1) && \
+    echo "✅ CSI v3 patches applied and verified"
+
+# STEP 2b: yaml-cpp 0.6.3 int8/char misparse fix (idempotent, see Dockerfile.build.csi.v3.rocky)
+RUN bash patch_oai_yaml_int8.sh /oai-ran && \
+    grep -q 'as<int16_t>() /\*RC8\*/' /oai-ran/common/config/yaml/config_yaml.cpp && \
+    grep -q 'as<uint16_t>() /\*RC8\*/' /oai-ran/common/config/yaml/config_yaml.cpp || \
+    (echo "❌ YAML int8 patch verification FAILED" && exit 1) && \
+    echo "✅ yaml-cpp int8 parser patch applied and verified"
+
+# STEP 3: CSI v3 sources in CMakeLists.txt
+RUN sed -i '/\${OPENAIR1_DIR}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/a\  \${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_integration_v3.c' CMakeLists.txt && \
+    sed -i '/\${OPENAIR1_DIR}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/a\  \${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_logging_callback_v3.c' CMakeLists.txt && \
+    sed -i '/\${OPENAIR1_DIR}\/PHY\/NR_ESTIMATION\/nr_ul_channel_estimation\.c/a\  \${OPENAIR1_DIR}/PHY/NR_ESTIMATION/csi_v3_support/csi_config_parser.c' CMakeLists.txt && \
+    grep -q "csi_integration_v3.c" CMakeLists.txt && \
+    grep -q "csi_logging_callback_v3.c" CMakeLists.txt && \
+    grep -q "csi_config_parser.c" CMakeLists.txt || \
+    (echo "❌ CMakeLists.txt UPDATE FAILED: CSI v3 sources not found" && exit 1) && \
+    echo "✅ CSI v3 sources added to CMakeLists.txt and verified"
+
+# STEP 4: CSI v3 linking (IMPORTED library target)
+RUN export OAI_DIR=/oai-ran && \
+    bash apply_csi_v3_cmake.sh && \
+    grep -q "add_library(csi_logging_v3 STATIC IMPORTED GLOBAL)" /oai-ran/CMakeLists.txt || \
+    (echo "❌ CSI v3 linking config verification FAILED" && exit 1) && \
+    echo "✅ CSI v3 linking configuration applied and verified"
+
+# STEP 5: rebuild the gNB with the 7.2 transport (same options as OAI Dockerfile.build.fhi72.*)
+RUN test -f ${XRAN_LOCATION}/build/libxran.so || \
+    (echo "❌ libxran.so not found under ${XRAN_LOCATION}: set XRAN_LOCATION" && exit 1)
+RUN /bin/sh oaienv && \
+    cd cmake_targets && \
+    mkdir -p log && \
+    source /opt/rh/gcc-toolset-13/enable && \
+    ./build_oai --ninja --gNB \
+      --build-lib 'telnetsrv enbscope uescope nrscope' \
+      -t oran_fhlib_5g --cmake-opt -Dxran_LOCATION=${XRAN_LOCATION} \
+      --build-e2 --cmake-opt -DKPM_VERSION=$KPM_VERSION --cmake-opt -DE2AP_VERSION=$E2AP_VERSION && \
+    ldd ran_build/build/nr-softmodem && \
+    ldd ran_build/build/liboran_fhlib_5g.so && \
+    echo "✅ OAI 7.2 build with CSI v3 SUCCESSFUL"
+
+RUN strings /oai-ran/cmake_targets/ran_build/build/nr-softmodem | grep -q "nr_srs_csi_logging_invoke_v3" && \
+    echo "✅ CSI invoke symbol found in binary" || \
+    (echo "❌ CSI invoke symbol NOT found - patch failed" && exit 1)
