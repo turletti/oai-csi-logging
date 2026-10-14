@@ -15,6 +15,9 @@ FROM docker.io/rockylinux:9 AS oai-gnb-fhi72-csi
 ENV TZ=Europe/Paris
 
 RUN dnf update -y && \
+    dnf install -y dnf-plugins-core && \
+    dnf config-manager --set-enabled crb && \
+    dnf install -y epel-release && \
     dnf install -y \
         procps-ng \
         libatomic \
