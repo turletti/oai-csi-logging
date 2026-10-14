@@ -118,6 +118,18 @@ int nr_csi_logging_init_v3(const char *config_str,
   return 0;
 }
 
+
+/* Heavy init (env config parse, ring buffer malloc, CSV open, flush thread creation) at process
+ * start, outside the L1 real-time path. Calling it lazily from the first SRS stalled the L1 UL
+ * thread (~50 ms on fhi72: TTI skip, then PUSCH never recovered).
+ * Antenna/port counts are only known at the first SRS: they are filled there (cheap assignments),
+ * before the first push, and are only read when the flush thread writes the JSON header. */
+static void __attribute__((constructor)) csi_logging_early_init_v3(void)
+{
+  const char *out_dir = getenv("CSI_OUTPUT_DIR") ?: "/data/csi";
+  nr_csi_logging_init_v3(NULL, 0, 0, out_dir);
+}
+
 void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx,
                                    uint16_t slot_rx,
                                    uint16_t rnti,
@@ -136,8 +148,9 @@ void nr_srs_csi_logging_invoke_v3(uint32_t frame_rx,
   const uint32_t symb_len = ofdm_symbol_size;
   static int g_csi_lazy_init_done = 0;
   if (!g_csi_lazy_init_done) {
-    const char *out_dir = getenv("CSI_OUTPUT_DIR") ?: "/data/csi";
-    nr_csi_logging_init_v3(NULL, nb_antennas_rx, N_ap, out_dir);
+    /* Cheap metadata assignments only: the heavy init ran in csi_logging_early_init_v3() */
+    g_csi_rb.metadata.nb_antenna_rx = nb_antennas_rx;
+    g_csi_rb.metadata.nb_ports_tx = N_ap;
     g_csi_rb.metadata.ofdm_symbol_size = ofdm_symbol_size;
     g_csi_rb.metadata.first_carrier_offset = first_carrier_offset;
     g_csi_rb.metadata.bwp_start = bwp_start;
