@@ -71,7 +71,7 @@ COPY --from=gnb-build \
 COPY --from=gnb-build /usr/local/lib64/ /usr/local/lib64/
 
 ## Copy E2 SM models
-COPY --from=gnb-build /usr/local/lib64/flexric /usr/local/lib64/flexric
+COPY --from=gnb-build /usr/local/lib64/flexric /usr/local/lib/flexric
 
 # Copying file for configuration module
 COPY --from=gnb-base \
